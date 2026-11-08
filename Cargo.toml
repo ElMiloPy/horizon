@@ -106,9 +106,11 @@ codegen-units = 1
 # Optimized but quick-to-link builds for iteration: cargo build --profile fast
 [profile.fast]
 inherits = "release"
-lto = false
-codegen-units = 16
-incremental = true
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+incremental = false
 
 [profile.fast.package.horizon-client]
 opt-level = "z"

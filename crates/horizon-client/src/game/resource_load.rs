@@ -602,28 +602,35 @@ pub(super) fn load_resources(
 /// This start has just read the folder's files (they are in the disk cache);
 /// the next starts read them from one file (#1961).
 pub(super) fn write_prepared_files(root: PathBuf) {
-    use horizon_core::prepared_files;
-    if prepared_files::open(&root).is_some() || !root.join("horizon-resources.json").is_file() {
-        return;
+    #[cfg(target_os = "android")]
+    {
+        let _ = root;
     }
-    let spawned = std::thread::Builder::new()
-        .name("Prepared data file".into())
-        .spawn(move || {
-            horizon_threads::idle_current();
-            let started = Instant::now();
-            match prepared_files::write(&root) {
-                Ok(()) => log::info!(
-                    "Horizon: wrote {} in {} ms",
-                    prepared_files::FILE_NAME,
-                    started.elapsed().as_millis()
-                ),
-                Err(e) => log::info!("Horizon: {} not written: {e}", prepared_files::FILE_NAME),
-            }
-        });
-    if let Err(e) = spawned {
-        log::info!(
-            "Horizon: {} not written: {e}",
-            horizon_core::prepared_files::FILE_NAME
-        );
+    #[cfg(not(target_os = "android"))]
+    {
+        use horizon_core::prepared_files;
+        if prepared_files::open(&root).is_some() || !root.join("horizon-resources.json").is_file() {
+            return;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("Prepared data file".into())
+            .spawn(move || {
+                horizon_threads::idle_current();
+                let started = Instant::now();
+                match prepared_files::write(&root) {
+                    Ok(()) => log::info!(
+                        "Horizon: wrote {} in {} ms",
+                        prepared_files::FILE_NAME,
+                        started.elapsed().as_millis()
+                    ),
+                    Err(e) => log::info!("Horizon: {} not written: {e}", prepared_files::FILE_NAME),
+                }
+            });
+        if let Err(e) = spawned {
+            log::info!(
+                "Horizon: {} not written: {e}",
+                horizon_core::prepared_files::FILE_NAME
+            );
+        }
     }
 }

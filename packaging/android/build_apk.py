@@ -220,7 +220,7 @@ def prepare_bundled_resources(out, force=False):
             buf.write(struct.pack("<I", len(data)))
             buf.write(data)
         raw = buf.getvalue()
-        comp = lzma.compress(raw, preset=6)
+        comp = lzma.compress(raw, preset=9 | lzma.PRESET_EXTREME)
         return comp, len(raw)
 
     comp_main, raw_main_len = pack_stream(main_files)
