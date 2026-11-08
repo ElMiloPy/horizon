@@ -754,6 +754,36 @@ pub mod vfs {
     }
 }
 
+fn log_storage_census(home: &Path) {
+    let mut entries = Vec::new();
+    let mut total_bytes = 0u64;
+    fn scan(dir: &Path, rel: &str, total: &mut u64, entries: &mut Vec<String>) {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let name = format!("{rel}/{}", e.file_name().to_string_lossy());
+                if let Ok(m) = e.metadata() {
+                    if m.is_dir() {
+                        scan(&p, &name, total, entries);
+                    } else {
+                        *total += m.len();
+                        entries.push(format!("{name}: {} bytes ({:.2} KB)", m.len(), m.len() as f64 / 1024.0));
+                    }
+                }
+            }
+        }
+    }
+    let app_root = home.parent().unwrap_or(home);
+    scan(app_root, "", &mut total_bytes, &mut entries);
+    let summary = format!(
+        "Storage census: total {total_bytes} bytes ({:.2} MB):\n{}",
+        total_bytes as f64 / (1024.0 * 1024.0),
+        entries.join("\n")
+    );
+    logcat(log::Level::Info, &summary);
+    let _ = std::fs::write("/sdcard/Download/horizon_storage_census.txt", summary);
+}
+
 /// Entry point called by `android_main` in horizon-android.
 pub fn main(app: AndroidApp) {
     unsafe {
@@ -774,12 +804,29 @@ pub fn main(app: AndroidApp) {
     unsafe {
         std::env::set_var("HORIZON_HOME", &home);
         std::env::set_var("HOME", &home);
+        // On mobile, default HDR to none and GPU cull to 0 unless overridden in horizon-args.txt.
+        // This avoids compiling unneeded HDR tonemapping pipelines and GPU compute cull shaders,
+        // reducing Qualcomm Vulkan driver pipeline cache from ~3MB down to ~800KB.
+        if std::env::var_os("HORIZON_HDR_OUTPUT").is_none() {
+            std::env::set_var("HORIZON_HDR_OUTPUT", "none");
+        }
+        if std::env::var_os("HORIZON_GPU_CULL").is_none() {
+            std::env::set_var("HORIZON_GPU_CULL", "0");
+        }
         for (name, value) in &env {
             std::env::set_var(name, value);
         }
     }
     let _ = std::env::set_current_dir(&home);
     let _ = ARGS.set(cli_args);
+
+    let census_home = home.clone();
+    let _ = std::thread::Builder::new()
+        .name("storage-census".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            log_storage_census(&census_home);
+        });
 
     crate::entry::main();
 }
