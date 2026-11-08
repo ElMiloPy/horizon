@@ -19,6 +19,18 @@ pub(super) fn leave_fullscreen_after(
     }
 }
 
+pub(super) fn create_event_loop() -> std::result::Result<EventLoop<()>, EventLoopError> {
+    #[cfg(target_os = "android")]
+    {
+        use winit::platform::android::EventLoopBuilderExtAndroid;
+        EventLoop::builder()
+            .with_android_app(crate::android::android_app())
+            .build()
+    }
+    #[cfg(not(target_os = "android"))]
+    EventLoop::new()
+}
+
 pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     if game.options.headless {
         // No display to open winit's loop on: the game's own loop.
@@ -29,7 +41,7 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
         return game.error.take().map_or(Ok(()), Err);
     }
     let mut split = split::Split::new(game);
-    let result = EventLoop::new()?.run_app(&mut split);
+    let result = create_event_loop()?.run_app(&mut split);
     game = split.host;
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
@@ -86,6 +98,17 @@ impl Loading {
             || self.ui_at.is_none_or(|at| at.elapsed() >= TITLE_FRAME_WAIT)
     }
     pub(super) fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            // Back from the background (Android), as Game::resumed.
+            let size = window.inner_size();
+            if let Some(r) = &mut self.renderer
+                && let Err(e) = r.resume(size.width, size.height)
+            {
+                log::warn!("Horizon: the window's surface did not come back: {e}");
+            }
+            window.request_redraw();
+            return;
+        }
         if self.window.is_some() {
             return;
         }
@@ -230,6 +253,13 @@ impl Loading {
         // The title frame's wait starts once its renderer is built.
         self.ui_at = Some(Instant::now());
     }
+    /// The window is going away (Android): its surface goes with it.
+    pub(super) fn suspended(&mut self) {
+        if let Some(r) = &mut self.renderer {
+            r.suspend();
+        }
+        horizon_client_render::logging::flush();
+    }
     pub(super) fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // The loop may run once more after exit(): keep the first error, the
         // one that ended loading.
@@ -248,6 +278,12 @@ impl Loading {
             return;
         }
         self.poll_menu_realms(event_loop);
+        if self.renderer.as_ref().is_some_and(|r| r.detached) {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(100),
+            ));
+            return;
+        }
         if let Some(w) = &self.window {
             if self.options.as_ref().is_some_and(|o| o.offscreen) {
                 self.draw();
@@ -292,7 +328,7 @@ impl Loading {
             );
         }
     }
-    pub(super) fn finish(&mut self, loaded: Loaded) -> Result<Option<split::Split<'static>>> {
+    pub(super) fn finish(&mut self, loaded: Loaded) -> Result<Option<Box<split::Split<'static>>>> {
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();
@@ -380,7 +416,7 @@ impl Loading {
             renderer_ms,
             game_ms
         );
-        Ok(Some(split::Split::new(game)))
+        Ok(Some(Box::new(split::Split::new(game))))
     }
 }
 
@@ -395,6 +431,12 @@ impl ApplicationHandler for App {
         match self {
             App::Loading(loading) => loading.resumed(event_loop),
             App::Ready(game) => game.resumed(event_loop),
+        }
+    }
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        match self {
+            App::Loading(loading) => loading.suspended(),
+            App::Ready(game) => game.suspended(event_loop),
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -434,7 +476,7 @@ impl ApplicationHandler for App {
                     None => Step::Waiting,
                     Some(Err(e)) => Step::Failed(e.into()),
                     Some(Ok(loaded)) => match loading.finish(loaded) {
-                        Ok(Some(game)) => Step::Ready(Box::new(game)),
+                        Ok(Some(game)) => Step::Ready(game),
                         Ok(None) => Step::Done,
                         Err(e) => Step::Failed(e),
                     },

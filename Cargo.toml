@@ -8,6 +8,7 @@ members = [
     "crates/horizon-hdr",
     "crates/horizon-world",
     "crates/horizon-client",
+    "crates/horizon-android",
     "crates/horizon-client-lib",
     "crates/horizon-client-core",
     "crates/horizon-client-input",
@@ -70,6 +71,7 @@ large_enum_variant = "allow"
 # Drop this and the folder once a wgpu release has these fixes.
 [patch.crates-io]
 wgpu-hal = { path = "third_party/wgpu-hal" }
+winit = { path = "third_party/winit" }
 # naga 30.0.1, with the fixes to its GLSL frontend that shader packs need (THIRD_PARTY_NOTICES.md).
 naga = { path = "third_party/naga" }
 # libmimalloc-sys 0.1.49 whose mimalloc v3 counts bits without POPCNT when MSVC builds it: the
@@ -107,3 +109,24 @@ inherits = "release"
 lto = false
 codegen-units = 16
 incremental = true
+
+[profile.fast.package.horizon-client]
+opt-level = "z"
+[profile.fast.package.horizon-client-lib]
+opt-level = "z"
+[profile.fast.package.horizon-client-render]
+opt-level = "z"
+[profile.fast.package.horizon-client-core]
+opt-level = "z"
+[profile.fast.package.horizon-world]
+opt-level = "z"
+[profile.fast.package.horizon-items]
+opt-level = "z"
+[profile.fast.package.horizon-protocol]
+opt-level = "z"
+[profile.fast.package.horizon-command]
+opt-level = "z"
+[profile.fast.package.horizon-assets]
+opt-level = "z"
+[profile.fast.package.horizon-android]
+opt-level = "z"

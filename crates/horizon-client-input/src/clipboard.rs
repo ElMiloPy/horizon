@@ -119,6 +119,27 @@ pub trait Clipboard {
     fn set(&mut self, text: &str);
 }
 
+#[cfg(target_os = "android")]
+mod arboard {
+    pub struct Clipboard;
+    #[allow(dead_code)]
+    pub enum Error {
+        ContentNotAvailable,
+        ClipboardNotSupported,
+    }
+    impl Clipboard {
+        pub fn new() -> Result<Self, Error> {
+            Ok(Self)
+        }
+        pub fn get_text(&mut self) -> Result<String, Error> {
+            Err(Error::ContentNotAvailable)
+        }
+        pub fn set_text(&mut self, _text: String) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+}
+
 /// The system clipboard (`ClipboardManager`). On Wayland, arboard uses the
 /// data-control protocol and falls back to X11 (XWayland) on compositors
 /// without it. When no system clipboard can be reached, text copied in the

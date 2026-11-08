@@ -3,6 +3,61 @@
 use super::*;
 
 impl Game<'_> {
+    #[cfg(target_os = "android")]
+    pub(super) fn android_input_frame(&mut self, event_loop: &dyn EventLoopCtl) {
+        let events = crate::android::take_mouse_events();
+        if events.is_empty() {
+            return;
+        }
+        let Some(id) = self.window.as_ref().map(|w| w.id()) else {
+            return;
+        };
+        let device_id = DeviceId::dummy();
+        for event in events {
+            let event = match event {
+                crate::android::MouseEvent::Moved(x, y) => WindowEvent::CursorMoved {
+                    device_id,
+                    position: winit::dpi::PhysicalPosition::new(x, y),
+                },
+                crate::android::MouseEvent::Button(button, down) => WindowEvent::MouseInput {
+                    device_id,
+                    state: if down {
+                        ElementState::Pressed
+                    } else {
+                        ElementState::Released
+                    },
+                    button,
+                },
+                crate::android::MouseEvent::Wheel(x, y) => WindowEvent::MouseWheel {
+                    device_id,
+                    delta: MouseScrollDelta::LineDelta(x, y),
+                    phase: winit::event::TouchPhase::Moved,
+                },
+                crate::android::MouseEvent::Motion(x, y) => {
+                    if self.screen == Screen::Playing && !self.captured {
+                        self.capture(true);
+                    }
+                    if self.pending_save.is_none()
+                        && (self.captured || self.screen == Screen::Playing)
+                        && (self.focused || cfg!(target_os = "android"))
+                        && self.keyboard_mouse
+                        && (!self.options.offscreen || self.split_window)
+                        && self.screen == Screen::Playing
+                    {
+                        self.note_input(
+                            input_trace::InputOrigin::User,
+                            input_trace::TraceKind::Motion { x, y },
+                        );
+                        self.mouse.on_move(0.0, 0.0, x, y, true, true);
+                        self.last_input = Instant::now();
+                    }
+                    continue;
+                }
+            };
+            self.handle_window_event(event_loop, id, event, input_trace::InputOrigin::User);
+        }
+    }
+
     /// winit's `window_event`. The control socket and the pad menu call it too, with the
     /// input they make up.
     pub(super) fn handle_window_event(
@@ -157,11 +212,21 @@ impl Game<'_> {
         if self.pending_save.is_some() {
             return;
         }
+        #[cfg(target_os = "android")]
+        self.android_input_frame(event_loop);
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         self.pause_if_inactive();
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
             self.error = Some("frame-limited run timed out".into());
             event_loop.exit();
+            return;
+        }
+        if self.renderer.as_ref().is_some_and(|r| r.detached) {
+            // No window to draw in (Android in the background): wake now and then for the
+            // control socket instead of spinning.
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(100),
+            ));
             return;
         }
         if let Some(w) = &self.window {
@@ -200,7 +265,16 @@ impl Game<'_> {
 
 impl ApplicationHandler for Game<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if let Some(window) = &self.window {
+            // Back from the background (Android): the same window, a new native surface.
+            let size = window.inner_size();
+            if let Some(r) = &mut self.renderer
+                && let Err(e) = r.resume(size.width, size.height)
+            {
+                log::warn!("Horizon: the window's surface did not come back: {e}");
+            }
+            self.audio.resume_output();
+            window.request_redraw();
             return;
         }
         debug_keys::warm_debug_cpu();
@@ -293,6 +367,18 @@ impl ApplicationHandler for Game<'_> {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.idle(event_loop);
+    }
+    /// Android took the window away (the app went to the background, the screen went off): its
+    /// surface goes now, and drawing pauses until resume.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(r) = &mut self.renderer {
+            r.suspend();
+        }
+        self.audio.suspend_output();
+        #[cfg(target_os = "android")]
+        if self.captured {
+            self.capture(false);
+        }
     }
     /// The application is ending. On macOS, Quit (Cmd+Q) ends it through
     /// applicationWillTerminate without a CloseRequested; vanilla's GLFW

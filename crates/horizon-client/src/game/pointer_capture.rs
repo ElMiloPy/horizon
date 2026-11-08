@@ -23,11 +23,13 @@ impl Game<'_> {
     pub(super) fn apply_mouse_look(&mut self) {
         let look = self.look_options();
         let time = self.started.elapsed().as_secs_f64();
-        let pointer = self.captured || self.agent_pointer;
+        let pointer = self.captured
+            || self.agent_pointer
+            || (cfg!(target_os = "android") && self.screen == Screen::Playing);
         let grabbed = pointer
             && self.screen == Screen::Playing
             && (self.player.is_some() || self.studio_freecam.active);
-        let active = self.focused || self.agent_pointer;
+        let active = self.focused || self.agent_pointer || cfg!(target_os = "android");
         if let Some((xo, yo)) = self
             .mouse
             .handle_accumulated_movement(time, active, grabbed, look)
@@ -185,16 +187,30 @@ impl Game<'_> {
             || window.inner_size().into(),
             |r| [r.config.width, r.config.height],
         );
+        #[cfg(not(target_os = "android"))]
         let [vx, vy] = self.view_at.map(f64::from);
+        #[cfg(not(target_os = "android"))]
         let centre = winit::dpi::PhysicalPosition::new(
             vx + f64::from(size[0]) / 2.0,
             vy + f64::from(size[1]) / 2.0,
         );
+        #[cfg(not(target_os = "android"))]
         let warp = |window: &Window| {
             let _ = window.set_cursor_position(centre);
         };
         let scale = HudBatch::new(size).scale;
         let was_grabbed = self.captured;
+        #[cfg(target_os = "android")]
+        {
+            if capture {
+                self.mouse.set_ignore_first_move();
+            }
+            self.captured = capture;
+            if self.captured != was_grabbed {
+                crate::android::capture_pointer(self.captured);
+            }
+        }
+        #[cfg(not(target_os = "android"))]
         if self.options.offscreen && !self.split_window {
             // A genuinely hidden `--offscreen` run leaves the system pointer where
             // the person at the computer has it. Its grab is internal (an

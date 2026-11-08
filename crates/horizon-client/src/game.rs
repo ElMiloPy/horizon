@@ -542,7 +542,8 @@ use key_codes::{
     glfw_button, glfw_modifiers, keyboard_button,
 };
 use loading_screen::{
-    App, Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
+    App, Loading, create_event_loop, leave_fullscreen_after, missing_resources, run_event_loop,
+    unclean_start_recovery,
 };
 use loading_window::{
     build_renderer, loading_frame, loading_renderer, prepare_renderer_textures, start_game,
@@ -698,7 +699,12 @@ impl Options {
     /// The command line, then what it asks of the process: the game folder, the account.
     /// A bad command line is a [`launch_api::UsageError`] (exit code 2, no crash report).
     fn read() -> Result<Option<Self>> {
-        let Some(mut o) = Self::parse(std::env::args().skip(1))
+        #[cfg(target_os = "android")]
+        let args = crate::android::args();
+        #[cfg(not(target_os = "android"))]
+        let args: Vec<String> = std::env::args().skip(1).collect();
+
+        let Some(mut o) = Self::parse(args.into_iter())
             .map_err(|e| launch_api::UsageError(e.to_string()))?
         else {
             return Ok(None);
@@ -18217,7 +18223,7 @@ fn run_loading(
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
-    let result = EventLoop::new()?.run_app(&mut app);
+    let result = create_event_loop()?.run_app(&mut app);
     narrator::stop();
     match &mut app {
         // Ready: splitscreen around P1's game.

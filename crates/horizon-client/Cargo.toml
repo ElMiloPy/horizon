@@ -86,6 +86,12 @@ fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 # The server thread's CPU time per tick (`HORIZON_SPIKES`, spans.rs).
 rustix = { version = "1", default-features = false, features = ["std", "time", "process", "fs"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.30.13", features = ["android-native-activity"] }
+jni = "0.21.1"
+lzma-rs = "0.3.0"
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # Resolve virtualized folders to shell-compatible physical paths.
 dunce = "1.0.5"

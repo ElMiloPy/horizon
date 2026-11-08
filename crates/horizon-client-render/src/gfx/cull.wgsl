@@ -34,11 +34,18 @@ struct Test {
 @group(0) @binding(5) var<uniform> params: Params;
 
 // The corners (bit 0: x, bit 1: y, bit 2: z) of the box's 12 triangles,
-// counter-clockwise seen from outside.
-const CORNERS = array<u32, 36>(
-    0u, 6u, 2u, 0u, 4u, 6u, 1u, 3u, 7u, 1u, 7u, 5u, 0u, 1u, 5u, 0u, 5u, 4u,
-    2u, 7u, 3u, 2u, 6u, 7u, 0u, 3u, 1u, 0u, 2u, 3u, 4u, 5u, 7u, 4u, 7u, 6u,
-);
+// counter-clockwise seen from outside, 3 bits each and 10 to a word:
+// 0 6 2 0 4 6 1 3 7 1 | 7 5 0 1 5 0 5 4 2 7 | 3 2 6 7 0 3 1 0 2 3 | 4 5 7 4 7 6.
+// A constant array indexed by the vertex index makes Adreno's shader compiler
+// fail and lose the device, so the table is arithmetic.
+fn box_corner(v: u32) -> u32 {
+    let word = select(
+        select(select(0x0f6740b0u, 0x3a94522fu, v >= 10u), 0x1a058f93u, v >= 20u),
+        0x379ecu,
+        v >= 30u,
+    );
+    return (word >> (3u * (v % 10u))) & 7u;
+}
 
 struct Box {
     @builtin(position) position: vec4<f32>,
@@ -95,7 +102,7 @@ fn vs_box(@builtin(vertex_index) v: u32, @builtin(instance_index) t: u32) -> Box
         out.position = select(vec4(0.0, 0.0, 0.0, 1.0), vec4(p, 1.0, 1.0), v < 3u);
         return out;
     }
-    out.position = globals.view_proj * vec4(corner(origin, low, high, CORNERS[v]), 1.0);
+    out.position = globals.view_proj * vec4(corner(origin, low, high, box_corner(v)), 1.0);
     return out;
 }
 

@@ -21,6 +21,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_client::telemetry::mark_start();
     horizon_client::spans::startup::init(std::time::Instant::now());
     horizon_client::spans::trace::start_from_env();
+    #[cfg(target_os = "android")]
+    let args = crate::android::args();
+    #[cfg(not(target_os = "android"))]
     let args: Vec<String> = std::env::args().skip(1).collect();
     let game_args = args.iter().take_while(|a| *a != "--dedicated");
     let help = game_args
@@ -275,6 +278,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             eprintln!("Press Enter to close.");
             let _ = std::io::stdin().read_line(&mut String::new());
         }
+        #[cfg(target_os = "android")]
+        crate::android::finish_and_exit();
+        #[cfg(not(target_os = "android"))]
         std::process::exit(if usage {
             game::exit_code::USAGE
         } else {
@@ -282,6 +288,8 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         });
     }
     logging::flush();
+    #[cfg(target_os = "android")]
+    crate::android::finish_and_exit();
 }
 
 /// The JVM raises its open-file limit to the hard limit as it starts

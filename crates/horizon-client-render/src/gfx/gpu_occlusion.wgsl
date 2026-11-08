@@ -10,10 +10,14 @@
 
 // The corners (bit 0: x, bit 1: y, bit 2: z) of the box's 12 triangles,
 // counter-clockwise seen from outside (cull.wgsl's).
-const CORNERS = array<u32, 36>(
-    0u, 6u, 2u, 0u, 4u, 6u, 1u, 3u, 7u, 1u, 7u, 5u, 0u, 1u, 5u, 0u, 5u, 4u,
-    2u, 7u, 3u, 2u, 6u, 7u, 0u, 3u, 1u, 0u, 2u, 3u, 4u, 5u, 7u, 4u, 7u, 6u,
-);
+fn box_triangle_corner(v: u32) -> u32 {
+    let word = select(
+        select(select(0x0f6740b0u, 0x3a94522fu, v >= 10u), 0x1a058f93u, v >= 20u),
+        0x379ecu,
+        v >= 30u,
+    );
+    return (word >> (3u * (v % 10u))) & 7u;
+}
 
 struct BoxOut {
     @builtin(position) position: vec4<f32>,
@@ -26,7 +30,7 @@ fn vs_box(@builtin(vertex_index) v: u32, @builtin(instance_index) t: u32) -> Box
     let o = bitcast<vec3<f32>>(box_origins[id].xyz);
     var out: BoxOut;
     out.id = id;
-    out.position = params.view_proj * vec4(box_corner(o, box_sections[id].a.z, CORNERS[v]), 1.0);
+    out.position = params.view_proj * vec4(box_corner(o, box_sections[id].a.z, box_triangle_corner(v)), 1.0);
     return out;
 }
 
