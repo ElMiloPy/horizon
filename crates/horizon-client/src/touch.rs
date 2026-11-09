@@ -393,22 +393,39 @@ impl TouchControls {
     /// Renders Starling's clean translucent Bedrock-style touch controls.
     pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas, mining_progress: f32) {
         let (gw, gh) = (batch.width, batch.height);
+        let scale = batch.scale;
         let u = gw.min(gh) / 9.0;
         let mut ui = horizon_client::ui_theme::Ui::new(atlas, batch, (-1.0, -1.0));
+        let to_dp = scale / ui.density;
 
         let plate = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.16 * a) as u8);
         let pressed = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.38 * a) as u8);
         let ink = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.85 * a) as u8);
 
         let circle = |ui: &mut horizon_client::ui_theme::Ui, c: [f32; 2], r: f32, fill: u32| {
-            let d = ui.density;
+            let cx = c[0] * to_dp;
+            let cy = c[1] * to_dp;
+            let cr = r * to_dp;
             ui.rounded(
-                (c[0] - r) / d,
-                (c[1] - r) / d,
-                2.0 * r / d,
-                2.0 * r / d,
-                r / d,
+                cx - cr,
+                cy - cr,
+                2.0 * cr,
+                2.0 * cr,
+                cr,
                 fill,
+            );
+        };
+        let ring = |ui: &mut horizon_client::ui_theme::Ui, c: [f32; 2], r: f32, color: u32| {
+            let cx = c[0] * to_dp;
+            let cy = c[1] * to_dp;
+            let cr = r * to_dp;
+            ui.border(
+                cx - cr,
+                cy - cr,
+                2.0 * cr,
+                2.0 * cr,
+                cr,
+                color,
             );
         };
 
@@ -438,17 +455,6 @@ impl TouchControls {
         // 3. Touch aim & breaking circle (Bedrock / Starling)
         if let Some(p) = self.aim() {
             let radius = 18.0;
-            let d = ui.density;
-            let ring = |ui: &mut horizon_client::ui_theme::Ui, c: [f32; 2], r: f32, color: u32| {
-                ui.border(
-                    (c[0] - r) / d,
-                    (c[1] - r) / d,
-                    2.0 * r / d,
-                    2.0 * r / d,
-                    r / d,
-                    color,
-                );
-            };
             ring(&mut ui, p, radius + 1.0, horizon_client::hud::rgba(0, 0, 0, 120));
             ring(&mut ui, p, radius, horizon_client::hud::rgba(255, 255, 255, 210));
             if self.holding() && mining_progress > 0.0 {
@@ -602,5 +608,19 @@ mod tests {
         let actions = controls.handle_touch(&make_touch(6, TouchPhase::Ended, 400.0, 200.0), 1.0, gw, gh);
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], TouchAction::AttackStop));
+    }
+
+    #[test]
+    fn touch_controls_draw_scales_circles_to_gui_bounds() {
+        let atlas = HudAtlas::boot();
+        let mut batch = HudBatch::new([1920, 1080]);
+        let controls = TouchControls::default();
+        controls.draw(&mut batch, &atlas, 0.0);
+
+        let (gw, gh) = (batch.width, batch.height);
+        let max_x = batch.vertices.iter().map(|v| v.pos[0]).fold(0.0f32, f32::max);
+        let max_y = batch.vertices.iter().map(|v| v.pos[1]).fold(0.0f32, f32::max);
+        assert!(max_x > 0.85 * gw, "circles must scale to full GUI bounds: max_x={max_x}, gw={gw}");
+        assert!(max_y > 0.70 * gh, "circles must scale to full GUI bounds: max_y={max_y}, gh={gh}");
     }
 }
