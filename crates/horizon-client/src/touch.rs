@@ -177,10 +177,16 @@ enum FingerRole {
 pub struct TouchControls {
     fingers: Vec<(u64, FingerRole)>,
     held_buttons: Vec<TouchButton>,
+    pub esc_finger: Option<u64>,
 }
 
 impl TouchControls {
     pub fn reset(&mut self) -> Vec<TouchAction> {
+        self.esc_finger = None;
+        self.reset_gameplay()
+    }
+
+    pub fn reset_gameplay(&mut self) -> Vec<TouchAction> {
         let mut out = Vec::new();
         for btn in self.held_buttons.drain(..) {
             out.push(TouchAction::ButtonUp(btn));
@@ -209,10 +215,94 @@ impl TouchControls {
         vec![
             (TouchButton::Jump, [0.905 * gw, 0.7556 * gh], 0.8 * u, "Jump"),
             (TouchButton::Sneak, [0.805 * gw, 0.8556 * gh], 0.6 * u, "Sneak"),
-            (TouchButton::Pause, [0.50 * gw, 0.0833 * gh], 0.45 * u, "II"),
+            (TouchButton::Pause, [0.50 * gw, 0.0833 * gh], 0.45 * u, "Esc"),
             (TouchButton::Chat, [0.88 * gw, 0.111 * gh], 0.55 * u, "Chat"),
             (TouchButton::Inventory, [0.95 * gw, 0.111 * gh], 0.55 * u, "Bag"),
         ]
+    }
+
+    /// Center and radius of the Esc button in GUI coordinates.
+    pub fn esc_button(&self, gw: f32, gh: f32) -> ([f32; 2], f32) {
+        let u = gw.min(gh) / 9.0;
+        ([0.50 * gw, 0.0833 * gh], 0.45 * u)
+    }
+
+    /// Checks and handles touch input on the Esc button when an overlay/inventory screen is open.
+    /// Returns `(consumed, triggered)`.
+    pub fn handle_esc_touch(&mut self, touch: &Touch, gui_scale: f32, gw: f32, gh: f32) -> (bool, bool) {
+        let (center, radius) = self.esc_button(gw, gh);
+        let p = [
+            (touch.location.x as f32) / gui_scale.max(1.0),
+            (touch.location.y as f32) / gui_scale.max(1.0),
+        ];
+        let dx = p[0] - center[0];
+        let dy = p[1] - center[1];
+        let in_esc = (dx * dx + dy * dy).sqrt() <= radius * 1.35;
+
+        match touch.phase {
+            TouchPhase::Started => {
+                if in_esc {
+                    self.esc_finger = Some(touch.id);
+                    (true, false)
+                } else {
+                    (false, false)
+                }
+            }
+            TouchPhase::Moved => {
+                if self.esc_finger == Some(touch.id) {
+                    (true, false)
+                } else {
+                    (false, false)
+                }
+            }
+            TouchPhase::Ended => {
+                if self.esc_finger == Some(touch.id) {
+                    self.esc_finger = None;
+                    (true, in_esc)
+                } else {
+                    (false, false)
+                }
+            }
+            TouchPhase::Cancelled => {
+                if self.esc_finger == Some(touch.id) {
+                    self.esc_finger = None;
+                    (true, false)
+                } else {
+                    (false, false)
+                }
+            }
+        }
+    }
+
+    /// Draws the Esc button when an inventory or container screen is open.
+    pub fn draw_esc(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
+        let (gw, gh) = (batch.width, batch.height);
+        let scale = batch.scale;
+        let mut ui = horizon_client::ui_theme::Ui::new(atlas, batch, (-1.0, -1.0));
+        let to_dp = scale / ui.density;
+
+        let plate = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.16 * a) as u8);
+        let pressed = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.38 * a) as u8);
+        let ink = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.85 * a) as u8);
+
+        let circle = |ui: &mut horizon_client::ui_theme::Ui, c: [f32; 2], r: f32, fill: u32| {
+            let cx = c[0] * to_dp;
+            let cy = c[1] * to_dp;
+            let cr = r * to_dp;
+            ui.rounded(cx - cr, cy - cr, 2.0 * cr, 2.0 * cr, cr, fill);
+        };
+
+        let (center, radius) = self.esc_button(gw, gh);
+        let is_held = self.esc_finger.is_some();
+        let fill = if is_held { pressed(1.0) } else { plate(1.0) };
+        circle(&mut ui, center, radius, fill);
+        ui.finish();
+
+        let label = "Esc";
+        let tw = HudBatch::text_width(atlas, label);
+        let tx = center[0] - tw * 0.5;
+        let ty = center[1] - 4.0;
+        batch.text(atlas, label, tx, ty, ink(1.0), true);
     }
 
     pub fn handle_touch(&mut self, touch: &Touch, gui_scale: f32, gw: f32, gh: f32) -> Vec<TouchAction> {
@@ -622,5 +712,60 @@ mod tests {
         let max_y = batch.vertices.iter().map(|v| v.pos[1]).fold(0.0f32, f32::max);
         assert!(max_x > 0.85 * gw, "circles must scale to full GUI bounds: max_x={max_x}, gw={gw}");
         assert!(max_y > 0.70 * gh, "circles must scale to full GUI bounds: max_y={max_y}, gh={gh}");
+    }
+
+    #[test]
+    fn touch_controls_handle_esc_touch_and_draw_esc() {
+        let mut controls = TouchControls::default();
+        let (gw, gh) = (640.0, 360.0);
+        let (esc_center, _) = controls.esc_button(gw, gh);
+
+        // 1. Touch outside Esc
+        let (consumed, triggered) = controls.handle_esc_touch(
+            &make_touch(10, TouchPhase::Started, 100.0, 100.0),
+            1.0,
+            gw,
+            gh,
+        );
+        assert!(!consumed);
+        assert!(!triggered);
+
+        // 2. Touch on Esc button
+        let (consumed, triggered) = controls.handle_esc_touch(
+            &make_touch(11, TouchPhase::Started, esc_center[0] as f64, esc_center[1] as f64),
+            1.0,
+            gw,
+            gh,
+        );
+        assert!(consumed);
+        assert!(!triggered);
+        assert_eq!(controls.esc_finger, Some(11));
+
+        // 3. Move finger
+        let (consumed, triggered) = controls.handle_esc_touch(
+            &make_touch(11, TouchPhase::Moved, esc_center[0] as f64 + 1.0, esc_center[1] as f64 + 1.0),
+            1.0,
+            gw,
+            gh,
+        );
+        assert!(consumed);
+        assert!(!triggered);
+
+        // 4. Release finger on Esc -> triggers
+        let (consumed, triggered) = controls.handle_esc_touch(
+            &make_touch(11, TouchPhase::Ended, esc_center[0] as f64, esc_center[1] as f64),
+            1.0,
+            gw,
+            gh,
+        );
+        assert!(consumed);
+        assert!(triggered);
+        assert_eq!(controls.esc_finger, None);
+
+        // 5. Test draw_esc
+        let atlas = HudAtlas::boot();
+        let mut batch = HudBatch::new([1280, 720]);
+        controls.draw_esc(&mut batch, &atlas);
+        assert!(!batch.vertices.is_empty());
     }
 }

@@ -850,7 +850,8 @@ pub mod input {
 
     fn key_input(key: &KeyEvent<'_>) -> Option<InputStatus> {
         let code = u32::from(key.key_code()) as i32;
-        if key.action() == KeyAction::Down && code > 0 {
+        // AKEYCODE_BACK = 4; Android system navigation should not switch off touch controls.
+        if key.action() == KeyAction::Down && code > 0 && code != 4 {
             KEYBOARD_USED.store(true, Ordering::Relaxed);
         }
         None

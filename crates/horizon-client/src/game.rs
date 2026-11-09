@@ -8545,9 +8545,13 @@ impl Game<'_> {
         if show_hud {
             self.draw_pad_guide(&mut batch, guide_from);
         }
-        if self.touch_active && self.touch_playing() && !self.ui.hide_gui {
-            let progress = self.mining.as_ref().map_or(0.0, |m| m.progress);
-            self.touch_controls.draw(&mut batch, &self.gui.atlas, progress);
+        if self.touch_active && !self.ui.hide_gui {
+            if self.touch_playing() {
+                let progress = self.mining.as_ref().map_or(0.0, |m| m.progress);
+                self.touch_controls.draw(&mut batch, &self.gui.atlas, progress);
+            } else if self.touch_screen_shows_esc() {
+                self.touch_controls.draw_esc(&mut batch, &self.gui.atlas);
+            }
         }
         batch
     }

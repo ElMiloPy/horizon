@@ -9,7 +9,7 @@ pub(super) fn follow_named_keymap(
     use winit::keyboard::{Key, NamedKey};
     if let Key::Named(named) = logical_key {
         let code = match named {
-            NamedKey::Escape => KeyCode::Escape,
+            NamedKey::Escape | NamedKey::BrowserBack => KeyCode::Escape,
             NamedKey::CapsLock => KeyCode::CapsLock,
             NamedKey::F1 => KeyCode::F1,
             NamedKey::F2 => KeyCode::F2,

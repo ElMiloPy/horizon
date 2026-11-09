@@ -10,6 +10,19 @@ impl Game<'_> {
             && !self.screen_over_playing()
     }
 
+    pub(super) fn touch_screen_shows_esc(&self) -> bool {
+        self.player.is_some()
+            && self.title.is_none()
+            && (matches!(
+                self.screen,
+                Screen::Inventory
+                    | Screen::Creative
+                    | Screen::Chat
+                    | Screen::Advancements
+                    | Screen::Stats
+            ) || self.screen_over_playing())
+    }
+
     pub(super) fn touch_aim_point(&self) -> Option<[f32; 2]> {
         if !self.touch_active || !self.touch_playing() {
             return None;
@@ -185,9 +198,26 @@ impl Game<'_> {
                 self.capture(false);
             }
             if !self.touch_playing() {
-                let reset_actions = self.touch_controls.reset();
+                let reset_actions = self.touch_controls.reset_gameplay();
                 for a in reset_actions {
                     self.apply_touch_action(a);
+                }
+                let (gw, gh, gui_scale) = self.renderer.as_ref().map_or((640.0, 360.0, 1.0), |r| {
+                    let b = horizon_client::hud::HudBatch::new([r.config.width, r.config.height]);
+                    (b.width, b.height, b.scale)
+                });
+                if self.touch_screen_shows_esc() {
+                    let (consumed, triggered) = self.touch_controls.handle_esc_touch(touch, gui_scale, gw, gh);
+                    if triggered {
+                        let _ = self.key_pressed(winit::keyboard::KeyCode::Escape, winit::keyboard::KeyCode::Escape);
+                        #[cfg(target_os = "android")]
+                        if self.captured {
+                            self.capture(false);
+                        }
+                    }
+                    if consumed {
+                        return;
+                    }
                 }
                 let slop = crate::touch::SLOP_PX;
                 let events = self.touch_pointer.event(touch, slop);
