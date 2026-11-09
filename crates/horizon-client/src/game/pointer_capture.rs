@@ -23,11 +23,16 @@ impl Game<'_> {
     pub(super) fn apply_mouse_look(&mut self) {
         let look = self.look_options();
         let time = self.started.elapsed().as_secs_f64();
-        let pointer = self.captured || self.agent_pointer;
+        let pointer = self.captured
+            || self.agent_pointer
+            || (self.touch_active && self.touch_playing());
         let grabbed = pointer
             && self.screen == Screen::Playing
             && (self.player.is_some() || self.studio_freecam.active);
-        let active = self.focused || self.agent_pointer || cfg!(target_os = "android");
+        let active = self.focused
+            || self.agent_pointer
+            || (self.touch_active && self.touch_playing())
+            || cfg!(target_os = "android");
         if let Some((xo, yo)) = self
             .mouse
             .handle_accumulated_movement(time, active, grabbed, look)

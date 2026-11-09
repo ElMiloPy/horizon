@@ -377,7 +377,7 @@ impl<'a> Ui<'a> {
         }
     }
     /// A filled rectangle with rounded corners.
-    pub(crate) fn rounded(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
+    pub fn rounded(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
         if color >> 24 == 0 {
             return;
         }

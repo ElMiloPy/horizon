@@ -3,6 +3,13 @@
 use super::*;
 
 impl Game<'_> {
+    pub(super) fn touch_playing(&self) -> bool {
+        self.screen == Screen::Playing
+            && self.title.is_none()
+            && self.player.is_some()
+            && !self.screen_over_playing()
+    }
+
     #[cfg(target_os = "android")]
     pub(super) fn android_input_frame(&mut self, event_loop: &dyn EventLoopCtl) {
         if crate::android::pointer_capture_lost() && self.captured {
@@ -73,8 +80,12 @@ impl Game<'_> {
             crate::touch::TouchAction::Stick(stick) => {
                 self.pad.injected.left = stick;
             }
+            crate::touch::TouchAction::Sprint(sprint) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::LeftStick, sprint);
+            }
             crate::touch::TouchAction::Look(dx, dy) => {
-                self.mouse.on_move(0.0, 0.0, dx, dy, true, true);
+                self.mouse.add_motion(dx, dy);
+                self.last_input = Instant::now();
             }
             crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Jump) => {
                 self.pad.injected.set(horizon_client::gamepad::Button::South, true);
@@ -88,18 +99,6 @@ impl Game<'_> {
             crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Sneak) => {
                 self.pad.injected.set(horizon_client::gamepad::Button::East, false);
             }
-            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Attack) => {
-                self.pad.injected.triggers[1] = 1.0;
-            }
-            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Attack) => {
-                self.pad.injected.triggers[1] = 0.0;
-            }
-            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Use) => {
-                self.pad.injected.triggers[0] = 1.0;
-            }
-            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Use) => {
-                self.pad.injected.triggers[0] = 0.0;
-            }
             crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Pause) => {
                 let _ = self.key_pressed(winit::keyboard::KeyCode::Escape, winit::keyboard::KeyCode::Escape);
             }
@@ -108,6 +107,16 @@ impl Game<'_> {
             }
             crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Inventory) => {
                 let _ = self.key_pressed(winit::keyboard::KeyCode::KeyE, winit::keyboard::KeyCode::KeyE);
+            }
+            crate::touch::TouchAction::AttackStart => {
+                self.pad.injected.triggers[1] = 1.0;
+            }
+            crate::touch::TouchAction::AttackStop => {
+                self.pad.injected.triggers[1] = 0.0;
+            }
+            crate::touch::TouchAction::Use => {
+                self.pad.injected.triggers[0] = 1.0;
+                self.touch_use_until = Some(Instant::now() + Duration::from_millis(80));
             }
             crate::touch::TouchAction::SelectSlot(slot) => {
                 self.selected = slot;
@@ -141,7 +150,11 @@ impl Game<'_> {
             if self.captured {
                 self.capture(false);
             }
-            if self.screen != Screen::Playing {
+            if !self.touch_playing() {
+                let reset_actions = self.touch_controls.reset();
+                for a in reset_actions {
+                    self.apply_touch_action(a);
+                }
                 let slop = crate::touch::SLOP_PX;
                 let events = self.touch_pointer.event(touch, slop);
                 for ev in events {
@@ -300,6 +313,16 @@ impl Game<'_> {
         }
         #[cfg(target_os = "android")]
         self.android_input_frame(event_loop);
+        if self.touch_active && self.touch_playing() {
+            let actions = self.touch_controls.frame(Instant::now());
+            for action in actions {
+                self.apply_touch_action(action);
+            }
+        }
+        if self.touch_use_until.is_some_and(|t| Instant::now() >= t) {
+            self.touch_use_until = None;
+            self.pad.injected.triggers[0] = 0.0;
+        }
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         self.pause_if_inactive();
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {

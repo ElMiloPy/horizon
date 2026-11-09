@@ -2691,6 +2691,7 @@ struct Game<'a> {
     touch_pointer: crate::touch::TouchPointer,
     touch_controls: crate::touch::TouchControls,
     touch_active: bool,
+    touch_use_until: Option<Instant>,
     frames: u64,
     /// The glint clock and options, read once at the start of each frame
     /// (game/item_draw.rs).
@@ -8539,7 +8540,7 @@ impl Game<'_> {
         if show_hud {
             self.draw_pad_guide(&mut batch, guide_from);
         }
-        if self.touch_active && self.screen == Screen::Playing && !self.ui.hide_gui {
+        if self.touch_active && self.touch_playing() && !self.ui.hide_gui {
             self.touch_controls.draw(&mut batch, &self.gui.atlas);
         }
         batch
@@ -17296,6 +17297,7 @@ impl<'a> Game<'a> {
             touch_pointer: Default::default(),
             touch_controls: Default::default(),
             touch_active: cfg!(target_os = "android"),
+            touch_use_until: None,
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),

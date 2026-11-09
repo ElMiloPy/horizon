@@ -1,51 +1,42 @@
-//! Touch input for Android (horizon-android).
-//!
-//! Provides:
-//! - `TouchPointer`: converts touch on menu screens (Title, Loading, Pause, Options, Inventory)
-//!   into standard mouse window events (cursor movement, left button clicks, and vertical scrolling).
-//! - `TouchControls`: on-screen virtual controls in the game world (`Screen::Playing`),
-//!   including a walking joystick on the left, camera look drag on the right, action buttons
-//!   (Jump, Sneak, Attack, Use, Inventory, Pause, Chat), and hotbar slot selection.
-//! - Direct HUD rendering via `HudBatch` and `HudAtlas`.
+//! Touch controls for Android (Bedrock/Starling layout):
+//! - Off the playing screen (menus, options, inventories, etc.): touches become mouse pointer events.
+//! - On the playing screen:
+//!   - Floating stick on the bottom-left controls movement and sprinting.
+//!   - Action buttons (Jump, Sneak, Pause, Chat, Bag) on clean, translucent Bedrock-style discs.
+//!   - World touches:
+//!     - Tap (< 300ms, still): Use / Interact / Place block.
+//!     - Hold (>= 300ms, still): Mine / Break block.
+//!     - Drag: Smooth camera look.
+//!   - Hotbar: Tapping hotbar slots selects the active slot.
 
-use horizon_client_render::hud::{HudAtlas, HudBatch, rgba};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use winit::{
     dpi::PhysicalPosition,
     event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent},
 };
+use horizon_client::hud::{HudAtlas, HudBatch};
 
-/// Threshold in pixels before a touch move is considered a drag/scroll rather than a tap.
+/// Menu scroll/tap slop in physical pixels.
 pub const SLOP_PX: f32 = 14.0;
+/// Holding still this long starts breaking blocks in view.
+pub const HOLD: Duration = Duration::from_millis(300);
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum MenuGesture {
+    #[default]
     Undecided,
     Scroll,
     Drag,
 }
 
-/// Translates screen touches on menu screens into mouse events.
+/// Off-world touch pointer: translates touch interactions on UI screens into mouse clicks/scrolls.
+#[derive(Default)]
 pub struct TouchPointer {
     finger: Option<u64>,
-    device: Option<DeviceId>,
     start: [f32; 2],
     last: [f32; 2],
     gesture: MenuGesture,
     scroll_scale: f32,
-}
-
-impl Default for TouchPointer {
-    fn default() -> Self {
-        Self {
-            finger: None,
-            device: None,
-            start: [0.0, 0.0],
-            last: [0.0, 0.0],
-            gesture: MenuGesture::Undecided,
-            scroll_scale: 0.5,
-        }
-    }
 }
 
 impl TouchPointer {
@@ -53,53 +44,39 @@ impl TouchPointer {
         self.finger == Some(finger)
     }
 
-    pub fn down(&self) -> bool {
-        self.finger.is_some()
-    }
-
-    pub fn set_gui_scale(&mut self, gui_scale: f32, sensitivity: f32) {
-        let s = (gui_scale.max(0.1) * sensitivity.max(0.01)) * 0.5;
-        self.scroll_scale = 1.0 / s.max(0.1);
-    }
-
-    pub fn reset(&mut self) {
-        self.finger = None;
-        self.gesture = MenuGesture::Undecided;
-    }
-
     pub fn event(&mut self, touch: &Touch, slop: f32) -> Vec<WindowEvent> {
         let p = [touch.location.x as f32, touch.location.y as f32];
-        let device_id = touch.device_id;
-        self.device = Some(device_id);
-
+        let device_id = DeviceId::dummy();
         let mut out = Vec::new();
+
         match touch.phase {
             TouchPhase::Started if self.finger.is_none() => {
                 self.finger = Some(touch.id);
                 self.start = p;
                 self.last = p;
                 self.gesture = MenuGesture::Undecided;
+                self.scroll_scale = 0.5;
                 out.push(WindowEvent::CursorMoved {
                     device_id,
                     position: PhysicalPosition::new(p[0] as f64, p[1] as f64),
                 });
             }
             TouchPhase::Moved if self.owns(touch.id) => {
-                let dx = p[0] - self.start[0];
-                let dy = p[1] - self.start[1];
-                let dist = (dx * dx + dy * dy).sqrt();
-
-                if self.gesture == MenuGesture::Undecided && dist > slop {
-                    if dy.abs() > dx.abs() * 1.25 {
-                        self.gesture = MenuGesture::Scroll;
-                        self.last = self.start;
-                    } else {
-                        self.gesture = MenuGesture::Drag;
-                        out.push(WindowEvent::MouseInput {
-                            device_id,
-                            state: ElementState::Pressed,
-                            button: MouseButton::Left,
-                        });
+                if self.gesture == MenuGesture::Undecided {
+                    let dx = p[0] - self.start[0];
+                    let dy = p[1] - self.start[1];
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist > slop {
+                        if dy.abs() > dx.abs() {
+                            self.gesture = MenuGesture::Scroll;
+                        } else {
+                            self.gesture = MenuGesture::Drag;
+                            out.push(WindowEvent::MouseInput {
+                                device_id,
+                                state: ElementState::Pressed,
+                                button: MouseButton::Left,
+                            });
+                        }
                     }
                 }
 
@@ -162,54 +139,44 @@ impl TouchPointer {
 pub enum TouchButton {
     Jump,
     Sneak,
-    Attack,
-    Use,
     Pause,
     Chat,
     Inventory,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-}
-
-impl Rect {
-    pub fn contains(&self, p: [f32; 2]) -> bool {
-        p[0] >= self.x && p[0] <= self.x + self.w && p[1] >= self.y && p[1] <= self.y + self.h
-    }
-}
-
 pub enum TouchAction {
     Stick([f32; 2]),
+    Sprint(bool),
     Look(f64, f64),
     ButtonDown(TouchButton),
     ButtonUp(TouchButton),
+    AttackStart,
+    AttackStop,
+    Use,
     SelectSlot(usize),
 }
 
 #[derive(Clone, Debug)]
 enum FingerRole {
-    Stick { origin: [f32; 2], current: [f32; 2] },
-    Look { last: [f32; 2], start: [f32; 2], time: Instant },
+    Stick {
+        origin: [f32; 2],
+        current: [f32; 2],
+        sprinting: bool,
+    },
+    Look {
+        start: [f32; 2],
+        last: [f32; 2],
+        down: Instant,
+        dragged: bool,
+        attacking: bool,
+    },
     Button(TouchButton),
 }
 
+#[derive(Default)]
 pub struct TouchControls {
     fingers: Vec<(u64, FingerRole)>,
     held_buttons: Vec<TouchButton>,
-}
-
-impl Default for TouchControls {
-    fn default() -> Self {
-        Self {
-            fingers: Vec::new(),
-            held_buttons: Vec::new(),
-        }
-    }
 }
 
 impl TouchControls {
@@ -218,50 +185,33 @@ impl TouchControls {
         for btn in self.held_buttons.drain(..) {
             out.push(TouchAction::ButtonUp(btn));
         }
-        if self.fingers.iter().any(|(_, r)| matches!(r, FingerRole::Stick { .. })) {
-            out.push(TouchAction::Stick([0.0, 0.0]));
+        for (_, role) in self.fingers.drain(..) {
+            match role {
+                FingerRole::Stick { sprinting, .. } => {
+                    out.push(TouchAction::Stick([0.0, 0.0]));
+                    if sprinting {
+                        out.push(TouchAction::Sprint(false));
+                    }
+                }
+                FingerRole::Look { attacking: true, .. } => {
+                    out.push(TouchAction::AttackStop);
+                }
+                _ => {}
+            }
         }
-        self.fingers.clear();
         out
     }
 
-    pub fn buttons(&self, gw: f32, gh: f32) -> Vec<(TouchButton, Rect, &'static str)> {
+    /// Action buttons laid out matching Starling / Bedrock proportions.
+    /// Returns: (button, center [x, y], radius, label).
+    pub fn buttons(&self, gw: f32, gh: f32) -> Vec<(TouchButton, [f32; 2], f32, &'static str)> {
+        let u = gw.min(gh) / 9.0;
         vec![
-            (
-                TouchButton::Pause,
-                Rect { x: gw - 34.0, y: 6.0, w: 28.0, h: 22.0 },
-                "||",
-            ),
-            (
-                TouchButton::Chat,
-                Rect { x: gw - 66.0, y: 6.0, w: 28.0, h: 22.0 },
-                "Chat",
-            ),
-            (
-                TouchButton::Jump,
-                Rect { x: gw - 52.0, y: gh - 60.0, w: 42.0, h: 42.0 },
-                "Jump",
-            ),
-            (
-                TouchButton::Sneak,
-                Rect { x: gw - 100.0, y: gh - 60.0, w: 42.0, h: 42.0 },
-                "Sneak",
-            ),
-            (
-                TouchButton::Attack,
-                Rect { x: gw - 52.0, y: gh - 108.0, w: 42.0, h: 42.0 },
-                "Hit",
-            ),
-            (
-                TouchButton::Use,
-                Rect { x: gw - 100.0, y: gh - 108.0, w: 42.0, h: 42.0 },
-                "Use",
-            ),
-            (
-                TouchButton::Inventory,
-                Rect { x: gw / 2.0 + 96.0, y: gh - 22.0, w: 22.0, h: 22.0 },
-                "···",
-            ),
+            (TouchButton::Jump, [0.905 * gw, 0.7556 * gh], 0.8 * u, "Jump"),
+            (TouchButton::Sneak, [0.805 * gw, 0.8556 * gh], 0.6 * u, "Sneak"),
+            (TouchButton::Pause, [0.50 * gw, 0.0833 * gh], 0.45 * u, "II"),
+            (TouchButton::Chat, [0.88 * gw, 0.111 * gh], 0.55 * u, "Chat"),
+            (TouchButton::Inventory, [0.95 * gw, 0.111 * gh], 0.55 * u, "Bag"),
         ]
     }
 
@@ -270,13 +220,16 @@ impl TouchControls {
             (touch.location.x as f32) / gui_scale.max(1.0),
             (touch.location.y as f32) / gui_scale.max(1.0),
         ];
-
+        let u = gw.min(gh) / 9.0;
         let mut out = Vec::new();
+
         match touch.phase {
             TouchPhase::Started => {
-                // 1. Check virtual buttons
-                for (btn, rect, _) in self.buttons(gw, gh) {
-                    if rect.contains(p) {
+                // 1. Virtual action buttons (Jump, Sneak, Pause, Chat, Bag)
+                for (btn, center, radius, _) in self.buttons(gw, gh) {
+                    let dx = p[0] - center[0];
+                    let dy = p[1] - center[1];
+                    if (dx * dx + dy * dy).sqrt() <= radius * 1.15 {
                         self.fingers.push((touch.id, FingerRole::Button(btn)));
                         if !self.held_buttons.contains(&btn) {
                             self.held_buttons.push(btn);
@@ -286,7 +239,7 @@ impl TouchControls {
                     }
                 }
 
-                // 2. Check hotbar slots
+                // 2. Hotbar slots (bottom center)
                 let hotbar_x = gw / 2.0 - 90.0;
                 let hotbar_y = gh - 22.0;
                 if p[1] >= hotbar_y && p[1] <= hotbar_y + 22.0 && p[0] >= hotbar_x && p[0] <= hotbar_x + 180.0 {
@@ -295,68 +248,99 @@ impl TouchControls {
                     return out;
                 }
 
-                // 3. Movement stick (left side of screen)
-                if p[0] < gw * 0.45 {
+                // 3. Floating movement stick (left 40% of screen)
+                if p[0] < gw * 0.40 && p[1] > gh * 0.30 {
                     if !self.fingers.iter().any(|(_, r)| matches!(r, FingerRole::Stick { .. })) {
-                        self.fingers.push((touch.id, FingerRole::Stick { origin: p, current: p }));
+                        self.fingers.push((
+                            touch.id,
+                            FingerRole::Stick {
+                                origin: p,
+                                current: p,
+                                sprinting: false,
+                            },
+                        ));
+                        return out;
                     }
-                    return out;
                 }
 
-                // 4. Camera look (right side of screen)
-                if !self.fingers.iter().any(|(_, r)| matches!(r, FingerRole::Look { .. })) {
-                    self.fingers.push((
-                        touch.id,
-                        FingerRole::Look {
-                            last: p,
-                            start: p,
-                            time: Instant::now(),
-                        },
-                    ));
-                }
+                // 4. In-world touch: look or tap-to-use / hold-to-break
+                self.fingers.push((
+                    touch.id,
+                    FingerRole::Look {
+                        start: p,
+                        last: p,
+                        down: Instant::now(),
+                        dragged: false,
+                        attacking: false,
+                    },
+                ));
             }
             TouchPhase::Moved => {
-                if let Some((_, role)) = self.fingers.iter_mut().find(|(id, _)| *id == touch.id) {
-                    match role {
-                        FingerRole::Stick { origin, current } => {
-                            *current = p;
-                            let r = 40.0;
-                            let dx = current[0] - origin[0];
-                            let dy = current[1] - origin[1];
-                            let sx = (dx / r).clamp(-1.0, 1.0);
-                            let sy = (-dy / r).clamp(-1.0, 1.0);
-                            out.push(TouchAction::Stick([sx, sy]));
+                let Some((_, role)) = self.fingers.iter_mut().find(|(f, _)| *f == touch.id) else {
+                    return out;
+                };
+                match role {
+                    FingerRole::Stick { origin, current, sprinting } => {
+                        *current = p;
+                        let r = 1.3 * u;
+                        let dx = p[0] - origin[0];
+                        let dy = p[1] - origin[1];
+                        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+                        let k = len.min(r) / len;
+                        let stick = [dx * k / r, -dy * k / r];
+                        out.push(TouchAction::Stick(stick));
+                        let forward = stick[1] > stick[0].abs();
+                        let sprint = if *sprinting {
+                            forward && stick[1] > 0.5
+                        } else {
+                            forward && len > r * 1.15
+                        };
+                        if sprint != *sprinting {
+                            *sprinting = sprint;
+                            out.push(TouchAction::Sprint(sprint));
                         }
-                        FingerRole::Look { last, .. } => {
-                            let dx = ((p[0] - last[0]) as f64) * 1.5;
-                            let dy = ((p[1] - last[1]) as f64) * 1.5;
-                            *last = p;
-                            out.push(TouchAction::Look(dx, dy));
-                        }
-                        FingerRole::Button(_) => {}
                     }
+                    FingerRole::Look { start, last, dragged, attacking, .. } => {
+                        let dist = ((p[0] - start[0]).powi(2) + (p[1] - start[1]).powi(2)).sqrt();
+                        if !*dragged && dist > u * 0.15 {
+                            *dragged = true;
+                            if *attacking {
+                                *attacking = false;
+                                out.push(TouchAction::AttackStop);
+                            }
+                        }
+                        if *dragged {
+                            let scale = 1200.0 / gh;
+                            let dx = (p[0] - last[0]) * scale;
+                            let dy = (p[1] - last[1]) * scale;
+                            out.push(TouchAction::Look(dx as f64, dy as f64));
+                        }
+                        *last = p;
+                    }
+                    FingerRole::Button(..) => {}
                 }
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
-                if let Some(pos) = self.fingers.iter().position(|(id, _)| *id == touch.id) {
-                    let (_, role) = self.fingers.remove(pos);
-                    match role {
-                        FingerRole::Stick { .. } => {
-                            out.push(TouchAction::Stick([0.0, 0.0]));
+                let Some(idx) = self.fingers.iter().position(|(f, _)| *f == touch.id) else {
+                    return out;
+                };
+                let (_, role) = self.fingers.remove(idx);
+                match role {
+                    FingerRole::Stick { sprinting, .. } => {
+                        out.push(TouchAction::Stick([0.0, 0.0]));
+                        if sprinting {
+                            out.push(TouchAction::Sprint(false));
                         }
-                        FingerRole::Button(btn) => {
-                            self.held_buttons.retain(|b| *b != btn);
-                            out.push(TouchAction::ButtonUp(btn));
-                        }
-                        FingerRole::Look { start, time, .. } => {
-                            let dx = p[0] - start[0];
-                            let dy = p[1] - start[1];
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            if touch.phase == TouchPhase::Ended && dist < 12.0 && time.elapsed().as_millis() < 240 {
-                                // Tap in world: perform a quick use / interact
-                                out.push(TouchAction::ButtonDown(TouchButton::Use));
-                                out.push(TouchAction::ButtonUp(TouchButton::Use));
-                            }
+                    }
+                    FingerRole::Button(btn) => {
+                        self.held_buttons.retain(|b| *b != btn);
+                        out.push(TouchAction::ButtonUp(btn));
+                    }
+                    FingerRole::Look { down, dragged, attacking, .. } => {
+                        if attacking {
+                            out.push(TouchAction::AttackStop);
+                        } else if touch.phase == TouchPhase::Ended && !dragged && down.elapsed() < HOLD {
+                            out.push(TouchAction::Use);
                         }
                     }
                 }
@@ -365,60 +349,80 @@ impl TouchControls {
         out
     }
 
+    /// Evaluates continuous hold state (breaks block after HOLD duration).
+    pub fn frame(&mut self, now: Instant) -> Vec<TouchAction> {
+        let mut out = Vec::new();
+        for (_, role) in &mut self.fingers {
+            if let FingerRole::Look { down, dragged: false, attacking, .. } = role {
+                if !*attacking && now.duration_since(*down) >= HOLD {
+                    *attacking = true;
+                    out.push(TouchAction::AttackStart);
+                }
+            }
+        }
+        out
+    }
+
     pub fn active_stick(&self) -> Option<([f32; 2], [f32; 2])> {
         self.fingers.iter().find_map(|(_, r)| match r {
-            FingerRole::Stick { origin, current } => Some((*origin, *current)),
+            FingerRole::Stick { origin, current, .. } => Some((*origin, *current)),
             _ => None,
         })
     }
 
+    /// Renders Starling's clean translucent Bedrock-style touch controls.
     pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
         let (gw, gh) = (batch.width, batch.height);
+        let u = gw.min(gh) / 9.0;
+        let mut ui = horizon_client::ui_theme::Ui::new(atlas, batch, (-1.0, -1.0));
 
-        // 1. Draw action buttons
-        for (btn, rect, label) in self.buttons(gw, gh) {
-            let is_held = self.held_buttons.contains(&btn);
-            let bg = if is_held {
-                rgba(255, 255, 255, 110)
-            } else {
-                rgba(0, 0, 0, 90)
-            };
-            batch.fill(atlas, rect.x, rect.y, rect.w, rect.h, bg);
+        let plate = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.16 * a) as u8);
+        let pressed = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.38 * a) as u8);
+        let ink = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.85 * a) as u8);
 
-            let border = if is_held {
-                rgba(255, 255, 255, 220)
-            } else {
-                rgba(255, 255, 255, 55)
-            };
-            batch.fill(atlas, rect.x, rect.y, rect.w, 1.0, border);
-            batch.fill(atlas, rect.x, rect.y + rect.h - 1.0, rect.w, 1.0, border);
-            batch.fill(atlas, rect.x, rect.y, 1.0, rect.h, border);
-            batch.fill(atlas, rect.x + rect.w - 1.0, rect.y, 1.0, rect.h, border);
+        let circle = |ui: &mut horizon_client::ui_theme::Ui, c: [f32; 2], r: f32, fill: u32| {
+            let d = ui.density;
+            ui.rounded(
+                (c[0] - r) / d,
+                (c[1] - r) / d,
+                2.0 * r / d,
+                2.0 * r / d,
+                r / d,
+                fill,
+            );
+        };
 
-            let tw = HudBatch::text_width(atlas, label);
-            let tx = rect.x + (rect.w - tw) * 0.5;
-            let ty = rect.y + (rect.h - 8.0) * 0.5;
-            batch.text(atlas, label, tx, ty, rgba(255, 255, 255, 230), true);
-        }
-
-        // 2. Draw stick
+        // 1. Movement stick
+        let stick_home = [0.12 * gw, 0.733 * gh];
+        let stick_radius = 1.3 * u;
         if let Some((origin, current)) = self.active_stick() {
-            let r = 40.0;
+            circle(&mut ui, origin, stick_radius, plate(0.7));
             let dx = current[0] - origin[0];
             let dy = current[1] - origin[1];
-            let dist = (dx * dx + dy * dy).sqrt();
-            let knob_pos = if dist > r {
-                [origin[0] + dx * (r / dist), origin[1] + dy * (r / dist)]
-            } else {
-                current
-            };
-            batch.fill(atlas, origin[0] - 25.0, origin[1] - 25.0, 50.0, 50.0, rgba(0, 0, 0, 60));
-            batch.fill(atlas, knob_pos[0] - 14.0, knob_pos[1] - 14.0, 28.0, 28.0, rgba(255, 255, 255, 130));
+            let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+            let k = len.min(stick_radius) / len;
+            let knob = [origin[0] + dx * k, origin[1] + dy * k];
+            circle(&mut ui, knob, stick_radius * 0.45, pressed(0.9));
         } else {
-            let hx = 45.0;
-            let hy = gh - 65.0;
-            batch.fill(atlas, hx - 24.0, hy - 24.0, 48.0, 48.0, rgba(0, 0, 0, 35));
-            batch.fill(atlas, hx - 12.0, hy - 12.0, 24.0, 24.0, rgba(255, 255, 255, 35));
+            circle(&mut ui, stick_home, stick_radius, plate(0.35));
+            circle(&mut ui, stick_home, stick_radius * 0.45, plate(0.45));
+        }
+
+        // 2. Action buttons
+        for (btn, center, radius, _) in self.buttons(gw, gh) {
+            let is_held = self.held_buttons.contains(&btn);
+            let fill = if is_held { pressed(1.0) } else { plate(1.0) };
+            circle(&mut ui, center, radius, fill);
+        }
+
+        ui.finish();
+
+        // 3. Centered button labels
+        for (_, center, _, label) in self.buttons(gw, gh) {
+            let tw = HudBatch::text_width(atlas, label);
+            let tx = center[0] - tw * 0.5;
+            let ty = center[1] - 4.0;
+            batch.text(atlas, label, tx, ty, ink(1.0), true);
         }
     }
 }
@@ -426,7 +430,6 @@ impl TouchControls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::DeviceId;
 
     fn make_touch(id: u64, phase: TouchPhase, x: f64, y: f64) -> Touch {
         Touch {
@@ -458,7 +461,6 @@ mod tests {
     fn touch_pointer_vertical_drag_produces_wheel() {
         let mut pointer = TouchPointer::default();
         pointer.event(&make_touch(1, TouchPhase::Started, 100.0, 100.0), SLOP_PX);
-        // Drag vertically beyond SLOP_PX (14.0)
         let events = pointer.event(&make_touch(1, TouchPhase::Moved, 100.0, 130.0), SLOP_PX);
         assert!(!events.is_empty());
         assert!(matches!(events[0], WindowEvent::MouseWheel { .. }));
@@ -468,18 +470,18 @@ mod tests {
     fn touch_controls_stick_moves_and_centres() {
         let mut controls = TouchControls::default();
         let (gw, gh) = (640.0, 360.0);
-        // Touch on left side (x = 50.0)
+        // Touch on left side
         let actions = controls.handle_touch(&make_touch(1, TouchPhase::Started, 50.0, 200.0), 1.0, gw, gh);
         assert!(actions.is_empty());
         assert!(controls.active_stick().is_some());
 
-        // Move forward (upwards, negative y)
+        // Move forward
         let actions = controls.handle_touch(&make_touch(1, TouchPhase::Moved, 50.0, 160.0), 1.0, gw, gh);
         assert_eq!(actions.len(), 1);
         match actions[0] {
             TouchAction::Stick([sx, sy]) => {
                 assert_eq!(sx, 0.0);
-                assert!(sy > 0.5); // Moving forward
+                assert!(sy > 0.5);
             }
             _ => panic!("Expected TouchAction::Stick"),
         }
@@ -495,11 +497,11 @@ mod tests {
         let mut controls = TouchControls::default();
         let (gw, gh) = (640.0, 360.0);
         let buttons = controls.buttons(gw, gh);
-        let (_, jump_rect, _) = buttons.iter().find(|(b, ..)| *b == TouchButton::Jump).unwrap();
+        let (_, center, radius, _) = buttons.iter().find(|(b, ..)| *b == TouchButton::Jump).unwrap();
 
-        // Tap inside Jump rect
-        let tap_x = jump_rect.x + 5.0;
-        let tap_y = jump_rect.y + 5.0;
+        // Tap inside Jump circle
+        let tap_x = center[0] + radius * 0.5;
+        let tap_y = center[1] + radius * 0.5;
         let actions = controls.handle_touch(&make_touch(2, TouchPhase::Started, tap_x as f64, tap_y as f64), 1.0, gw, gh);
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], TouchAction::ButtonDown(TouchButton::Jump)));
@@ -510,18 +512,50 @@ mod tests {
     }
 
     #[test]
-    fn touch_controls_hotbar_slot_selection() {
+    fn touch_controls_tap_produces_use() {
         let mut controls = TouchControls::default();
         let (gw, gh) = (640.0, 360.0);
-        let hotbar_x = gw / 2.0 - 90.0;
-        let hotbar_y = gh - 22.0;
-
-        // Tap slot 3
-        let tap_x = hotbar_x + 3.0 * 20.0 + 5.0;
-        let tap_y = hotbar_y + 5.0;
-        let actions = controls.handle_touch(&make_touch(3, TouchPhase::Started, tap_x as f64, tap_y as f64), 1.0, gw, gh);
+        // Tap in right side of screen (world area)
+        let _ = controls.handle_touch(&make_touch(4, TouchPhase::Started, 400.0, 200.0), 1.0, gw, gh);
+        let actions = controls.handle_touch(&make_touch(4, TouchPhase::Ended, 400.0, 200.0), 1.0, gw, gh);
         assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], TouchAction::SelectSlot(3)));
+        assert!(matches!(actions[0], TouchAction::Use));
+    }
+
+    #[test]
+    fn touch_controls_drag_produces_look() {
+        let mut controls = TouchControls::default();
+        let (gw, gh) = (640.0, 360.0);
+        let _ = controls.handle_touch(&make_touch(5, TouchPhase::Started, 400.0, 200.0), 1.0, gw, gh);
+        // Drag horizontally
+        let actions = controls.handle_touch(&make_touch(5, TouchPhase::Moved, 430.0, 200.0), 1.0, gw, gh);
+        assert_eq!(actions.len(), 1);
+        match actions[0] {
+            TouchAction::Look(dx, dy) => {
+                assert!(dx > 0.0);
+                assert_eq!(dy, 0.0);
+            }
+            _ => panic!("Expected TouchAction::Look"),
+        }
+    }
+
+    #[test]
+    fn touch_controls_hold_produces_attack() {
+        let mut controls = TouchControls::default();
+        let (gw, gh) = (640.0, 360.0);
+        let _ = controls.handle_touch(&make_touch(6, TouchPhase::Started, 400.0, 200.0), 1.0, gw, gh);
+        // Before HOLD: no attack
+        let actions = controls.frame(Instant::now());
+        assert!(actions.is_empty());
+
+        // After HOLD (350ms): attack starts
+        let actions = controls.frame(Instant::now() + Duration::from_millis(350));
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(actions[0], TouchAction::AttackStart));
+
+        // Lift finger: attack stops
+        let actions = controls.handle_touch(&make_touch(6, TouchPhase::Ended, 400.0, 200.0), 1.0, gw, gh);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(actions[0], TouchAction::AttackStop));
     }
 }
-
