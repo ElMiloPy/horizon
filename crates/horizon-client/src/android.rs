@@ -802,10 +802,11 @@ pub fn main(app: AndroidApp) {
 
 pub mod input {
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use winit::event::MouseButton;
     use winit::platform::android::activity::{
         InputStatus,
-        input::{Axis, InputEvent, MotionAction, MotionEvent},
+        input::{Axis, InputEvent, KeyAction, KeyEvent, MotionAction, MotionEvent},
     };
 
     const SOURCE_MOUSE: u32 = 0x2000;
@@ -836,12 +837,23 @@ pub mod input {
         buttons: 0,
         at: None,
     });
+    static KEYBOARD_USED: AtomicBool = AtomicBool::new(false);
+    static POINTER_LOST: AtomicBool = AtomicBool::new(false);
 
     pub fn hook(event: &InputEvent<'_>) -> Option<InputStatus> {
         match event {
+            InputEvent::KeyEvent(key) => key_input(key),
             InputEvent::MotionEvent(motion) => motion_input(motion),
             _ => None,
         }
+    }
+
+    fn key_input(key: &KeyEvent<'_>) -> Option<InputStatus> {
+        let code = u32::from(key.key_code()) as i32;
+        if key.action() == KeyAction::Down && code > 0 {
+            KEYBOARD_USED.store(true, Ordering::Relaxed);
+        }
+        None
     }
 
     fn motion_input(motion: &MotionEvent<'_>) -> Option<InputStatus> {
@@ -920,5 +932,20 @@ pub mod input {
         let mut mouse = MOUSE.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut mouse.events)
     }
+
+    pub fn keyboard_used() -> bool {
+        KEYBOARD_USED.swap(false, Ordering::Relaxed)
+    }
+
+    pub fn note_pointer_capture_lost() {
+        POINTER_LOST.store(true, Ordering::Relaxed);
+    }
+
+    pub fn pointer_capture_lost() -> bool {
+        POINTER_LOST.swap(false, Ordering::Relaxed)
+    }
 }
-pub use input::{MouseEvent, take_mouse_events};
+pub use input::{
+    MouseEvent, keyboard_used, note_pointer_capture_lost, pointer_capture_lost,
+    take_mouse_events,
+};

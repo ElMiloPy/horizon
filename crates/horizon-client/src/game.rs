@@ -2688,6 +2688,9 @@ struct Game<'a> {
     last_input: Instant,
     /// Controllers (Horizon's own).
     pad: pad::Pads,
+    touch_pointer: crate::touch::TouchPointer,
+    touch_controls: crate::touch::TouchControls,
+    touch_active: bool,
     frames: u64,
     /// The glint clock and options, read once at the start of each frame
     /// (game/item_draw.rs).
@@ -8535,6 +8538,9 @@ impl Game<'_> {
         }
         if show_hud {
             self.draw_pad_guide(&mut batch, guide_from);
+        }
+        if self.touch_active && self.screen == Screen::Playing && !self.ui.hide_gui {
+            self.touch_controls.draw(&mut batch, &self.gui.atlas);
         }
         batch
     }
@@ -17287,6 +17293,9 @@ impl<'a> Game<'a> {
             frame_end: now,
             last_input: now,
             pad: Default::default(),
+            touch_pointer: Default::default(),
+            touch_controls: Default::default(),
+            touch_active: cfg!(target_os = "android"),
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),
@@ -18220,6 +18229,7 @@ fn run_loading(
         ui_at: None,
         title_drawn: false,
         menu,
+        touch_pointer: Default::default(),
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));

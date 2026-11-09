@@ -5,10 +5,20 @@ use super::*;
 impl Game<'_> {
     #[cfg(target_os = "android")]
     pub(super) fn android_input_frame(&mut self, event_loop: &dyn EventLoopCtl) {
+        if crate::android::pointer_capture_lost() && self.captured {
+            self.capture(false);
+        }
+        if crate::android::keyboard_used() {
+            self.touch_active = false;
+            if self.screen == Screen::Playing && !self.captured {
+                self.capture(true);
+            }
+        }
         let events = crate::android::take_mouse_events();
         if events.is_empty() {
             return;
         }
+        self.touch_active = false;
         let Some(id) = self.window.as_ref().map(|w| w.id()) else {
             return;
         };
@@ -58,6 +68,54 @@ impl Game<'_> {
         }
     }
 
+    pub(super) fn apply_touch_action(&mut self, action: crate::touch::TouchAction) {
+        match action {
+            crate::touch::TouchAction::Stick(stick) => {
+                self.pad.injected.left = stick;
+            }
+            crate::touch::TouchAction::Look(dx, dy) => {
+                self.mouse.on_move(0.0, 0.0, dx, dy, true, true);
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Jump) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::South, true);
+            }
+            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Jump) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::South, false);
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Sneak) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::East, true);
+            }
+            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Sneak) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::East, false);
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Attack) => {
+                self.pad.injected.triggers[1] = 1.0;
+            }
+            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Attack) => {
+                self.pad.injected.triggers[1] = 0.0;
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Use) => {
+                self.pad.injected.triggers[0] = 1.0;
+            }
+            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Use) => {
+                self.pad.injected.triggers[0] = 0.0;
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Pause) => {
+                let _ = self.key_pressed(winit::keyboard::KeyCode::Escape, winit::keyboard::KeyCode::Escape);
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Chat) => {
+                let _ = self.key_pressed(winit::keyboard::KeyCode::KeyT, winit::keyboard::KeyCode::KeyT);
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Inventory) => {
+                let _ = self.key_pressed(winit::keyboard::KeyCode::KeyE, winit::keyboard::KeyCode::KeyE);
+            }
+            crate::touch::TouchAction::SelectSlot(slot) => {
+                self.selected = slot;
+            }
+            _ => {}
+        }
+    }
+
     /// winit's `window_event`. The control socket and the pad menu call it too, with the
     /// input they make up.
     pub(super) fn handle_window_event(
@@ -77,6 +135,34 @@ impl Game<'_> {
             return;
         }
         follow_keymap(&mut event);
+        if let WindowEvent::Touch(ref touch) = event {
+            self.touch_active = true;
+            #[cfg(target_os = "android")]
+            if self.captured {
+                self.capture(false);
+            }
+            if self.screen != Screen::Playing {
+                let slop = crate::touch::SLOP_PX;
+                let events = self.touch_pointer.event(touch, slop);
+                for ev in events {
+                    self.handle_window_event(event_loop, id, ev, origin);
+                }
+                return;
+            } else {
+                let gui_scale = self.renderer.as_ref().map_or(1.0, |r| {
+                    horizon_client::hud::HudBatch::new([r.config.width, r.config.height]).scale
+                });
+                let (gw, gh) = self.renderer.as_ref().map_or((640.0, 360.0), |r| {
+                    let b = horizon_client::hud::HudBatch::new([r.config.width, r.config.height]);
+                    (b.width, b.height)
+                });
+                let actions = self.touch_controls.handle_touch(touch, gui_scale, gw, gh);
+                for action in actions {
+                    self.apply_touch_action(action);
+                }
+                return;
+            }
+        }
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.
         if let WindowEvent::MouseInput { state, button, .. } = &mut event
             && *button == MouseButton::Left

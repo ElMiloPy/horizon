@@ -39,7 +39,7 @@ pub(super) struct Pads {
     #[cfg(feature = "controllers")]
     devices: hardware::Devices,
     /// The virtual pad of `horizon-ctl pad`.
-    injected: PadState,
+    pub(super) injected: PadState,
     /// The virtual pad was in use at the last poll.
     virtual_input: bool,
     /// Buttons a `pad ... tap` releases at the next poll.

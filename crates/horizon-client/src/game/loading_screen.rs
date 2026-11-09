@@ -83,6 +83,7 @@ pub(super) struct Loading {
     pub(super) ui_at: Option<Instant>,
     pub(super) title_drawn: bool,
     pub(super) menu: startup_menu::StartupMenu,
+    pub(super) touch_pointer: crate::touch::TouchPointer,
     pub(super) error: Option<Box<dyn std::error::Error>>,
 }
 /// How long the handoff waits for the first title frame before building the
@@ -260,6 +261,14 @@ impl Loading {
         mut event: WindowEvent,
     ) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
+            return;
+        }
+        if let WindowEvent::Touch(ref touch) = event {
+            let slop = crate::touch::SLOP_PX;
+            let events = self.touch_pointer.event(touch, slop);
+            for ev in events {
+                self.window_event(event_loop, id, ev);
+            }
             return;
         }
         follow_keymap(&mut event);
