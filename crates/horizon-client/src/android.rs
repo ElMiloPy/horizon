@@ -109,12 +109,28 @@ pub fn capture_pointer(capture: bool) {
         let decor = env
             .call_method(window, "getDecorView", "()Landroid/view/View;", &[])?
             .l()?;
-        let method = if capture {
-            "requestPointerCapture"
+        if capture {
+            let _ = env.call_method(&decor, "requestPointerCapture", "()V", &[]);
         } else {
-            "releasePointerCapture"
-        };
-        env.call_method(decor, method, "()V", &[])?;
+            let _ = env.call_method(&decor, "releasePointerCapture", "()V", &[]);
+            if let Ok(icon_cls) = env.find_class("android/view/PointerIcon") {
+                if let Ok(icon) = env.call_static_method(
+                    icon_cls,
+                    "getSystemIcon",
+                    "(Landroid/content/Context;I)Landroid/view/PointerIcon;",
+                    &[(&*activity).into(), 1000i32.into()],
+                ) {
+                    if let Ok(icon_obj) = icon.l() {
+                        let _ = env.call_method(
+                            &decor,
+                            "setPointerIcon",
+                            "(Landroid/view/PointerIcon;)V",
+                            &[(&icon_obj).into()],
+                        );
+                    }
+                }
+            }
+        }
         Ok(())
     });
 }

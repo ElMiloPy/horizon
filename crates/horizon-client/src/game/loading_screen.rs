@@ -106,6 +106,8 @@ impl Loading {
             {
                 log::warn!("Horizon: the window's surface did not come back: {e}");
             }
+            #[cfg(target_os = "android")]
+            crate::android::capture_pointer(false);
             window.request_redraw();
             return;
         }
@@ -147,6 +149,8 @@ impl Loading {
         horizon_client::window::settle_created_fullscreen(&window, fullscreen);
         drop(window_step);
         horizon_client::telemetry::note_display(&window);
+        #[cfg(target_os = "android")]
+        crate::android::capture_pointer(false);
         // The renderer takes seconds to build and winit's window sits white
         // until the first frame presents, so paint the boot screen on it and
         // keep repainting it as the console's lines arrive; the wgpu frames
@@ -199,6 +203,55 @@ impl Loading {
         }
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
         self.window = Some(window);
+    }
+    #[cfg(target_os = "android")]
+    pub(super) fn android_input_frame(&mut self, event_loop: &ActiveEventLoop) {
+        let events = crate::android::take_mouse_events();
+        if events.is_empty() {
+            return;
+        }
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let id = window.id();
+        let device_id = DeviceId::dummy();
+        let mut redraw = false;
+        for event in events {
+            let event = match event {
+                crate::android::MouseEvent::Moved(x, y) => {
+                    redraw = true;
+                    WindowEvent::CursorMoved {
+                        device_id,
+                        position: winit::dpi::PhysicalPosition::new(x, y),
+                    }
+                }
+                crate::android::MouseEvent::Button(button, down) => {
+                    redraw = true;
+                    WindowEvent::MouseInput {
+                        device_id,
+                        state: if down {
+                            ElementState::Pressed
+                        } else {
+                            ElementState::Released
+                        },
+                        button,
+                    }
+                }
+                crate::android::MouseEvent::Wheel(x, y) => {
+                    redraw = true;
+                    WindowEvent::MouseWheel {
+                        device_id,
+                        delta: MouseScrollDelta::LineDelta(x, y),
+                        phase: winit::event::TouchPhase::Moved,
+                    }
+                }
+                crate::android::MouseEvent::Motion(..) => continue,
+            };
+            self.window_event(event_loop, id, event);
+        }
+        if redraw {
+            window.request_redraw();
+        }
     }
     pub(super) fn window_event(
         &mut self,
@@ -261,6 +314,8 @@ impl Loading {
         horizon_client_render::logging::flush();
     }
     pub(super) fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        self.android_input_frame(event_loop);
         // The loop may run once more after exit(): keep the first error, the
         // one that ended loading.
         if self.error.is_some() {
