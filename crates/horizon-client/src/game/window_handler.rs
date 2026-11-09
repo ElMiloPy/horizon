@@ -23,6 +23,20 @@ impl Game<'_> {
             ) || self.screen_over_playing())
     }
 
+    pub(super) fn touch_hits_entity(&self) -> bool {
+        if let Some((_, distance, _)) = self.mob_hit() {
+            if self.before_block(distance) && self.held_range_allows(distance) {
+                return true;
+            }
+        }
+        if let Some(hit) = self.remote_object_hit(true) {
+            if self.before_block(hit.distance) && self.held_range_allows(hit.distance) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub(super) fn touch_aim_point(&self) -> Option<[f32; 2]> {
         if !self.touch_active || !self.touch_playing() {
             return None;
@@ -161,9 +175,22 @@ impl Game<'_> {
                 self.pad.injected.triggers[1] = 0.0;
             }
             crate::touch::TouchAction::Use(point) => {
-                self.pad.injected.triggers[0] = 1.0;
-                self.touch_use_until = Some(Instant::now() + Duration::from_millis(80));
                 self.touch_tapped = Some((Instant::now() + Duration::from_millis(150), point));
+                let sneaking = self.player.as_ref().is_some_and(|p| p.shift_key_down);
+                if !sneaking && self.touch_hits_entity() {
+                    self.left = true;
+                    self.pad.injected.triggers[1] = 1.0;
+                    self.touch_attack_until = Some(Instant::now() + Duration::from_millis(80));
+                    self.clicks.miss_time = 0;
+                    if self.remote.is_some() {
+                        self.remote_start_attack();
+                    } else {
+                        self.attack();
+                    }
+                } else {
+                    self.pad.injected.triggers[0] = 1.0;
+                    self.touch_use_until = Some(Instant::now() + Duration::from_millis(80));
+                }
             }
             crate::touch::TouchAction::SelectSlot(slot) => {
                 self.selected = slot;
@@ -386,6 +413,11 @@ impl Game<'_> {
         if self.touch_use_until.is_some_and(|t| Instant::now() >= t) {
             self.touch_use_until = None;
             self.pad.injected.triggers[0] = 0.0;
+        }
+        if self.touch_attack_until.is_some_and(|t| Instant::now() >= t) {
+            self.touch_attack_until = None;
+            self.pad.injected.triggers[1] = 0.0;
+            self.left = false;
         }
         if self.touch_tapped.is_some_and(|(t, _)| Instant::now() >= t) {
             self.touch_tapped = None;

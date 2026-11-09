@@ -9833,7 +9833,7 @@ impl Game<'_> {
         }
     }
 
-    fn remote_start_attack(&mut self) -> bool {
+    pub(super) fn remote_start_attack(&mut self) -> bool {
         if self.clicks.miss_time > 0 {
             return false;
         }

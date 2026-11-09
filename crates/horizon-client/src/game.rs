@@ -2692,6 +2692,7 @@ struct Game<'a> {
     touch_controls: crate::touch::TouchControls,
     touch_active: bool,
     touch_use_until: Option<Instant>,
+    touch_attack_until: Option<Instant>,
     touch_tapped: Option<(Instant, [f32; 2])>,
     frames: u64,
     /// The glint clock and options, read once at the start of each frame
@@ -17312,6 +17313,7 @@ impl<'a> Game<'a> {
             touch_controls: Default::default(),
             touch_active: cfg!(target_os = "android"),
             touch_use_until: None,
+            touch_attack_until: None,
             touch_tapped: None,
             frames: 0,
             glint_frame: Default::default(),
