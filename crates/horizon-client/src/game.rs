@@ -2692,6 +2692,7 @@ struct Game<'a> {
     touch_controls: crate::touch::TouchControls,
     touch_active: bool,
     touch_use_until: Option<Instant>,
+    touch_tapped: Option<(Instant, [f32; 2])>,
     frames: u64,
     /// The glint clock and options, read once at the start of each frame
     /// (game/item_draw.rs).
@@ -3717,7 +3718,10 @@ impl Game<'_> {
                 pick_view_vector(m.head_yaw, m.head_pitch),
             ));
         }
-        Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
+        let dir = self
+            .touch_aim_dir()
+            .unwrap_or_else(|| pick_view_vector(self.yaw, self.pitch));
+        Some((self.eye_position()?, dir))
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
@@ -8217,6 +8221,7 @@ impl Game<'_> {
             if self.camera_type.first_person()
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
+                && !(self.touch_active && self.touch_playing())
             {
                 let attack = (indicator == 1).then_some(strength);
                 let full = attack.is_some_and(|a| {
@@ -8541,7 +8546,8 @@ impl Game<'_> {
             self.draw_pad_guide(&mut batch, guide_from);
         }
         if self.touch_active && self.touch_playing() && !self.ui.hide_gui {
-            self.touch_controls.draw(&mut batch, &self.gui.atlas);
+            let progress = self.mining.as_ref().map_or(0.0, |m| m.progress);
+            self.touch_controls.draw(&mut batch, &self.gui.atlas, progress);
         }
         batch
     }
@@ -14518,7 +14524,11 @@ impl Game<'_> {
         // screen does not hide it: vanilla checks the HUD and the game mode, not the screen.
         let adventure = self.mode == horizon_client::command::args::GameMode::Adventure;
         let can_build = self.may_build() || adventure;
-        let outline = if !self.ui.hide_gui && !self.entity_targeted() && can_build {
+        let outline = if !self.ui.hide_gui
+            && !self.entity_targeted()
+            && can_build
+            && (!self.touch_active || self.touch_aim_point().is_some())
+        {
             self.pick()
                 .filter(|h| {
                     self.may_build()
@@ -17298,6 +17308,7 @@ impl<'a> Game<'a> {
             touch_controls: Default::default(),
             touch_active: cfg!(target_os = "android"),
             touch_use_until: None,
+            touch_tapped: None,
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),

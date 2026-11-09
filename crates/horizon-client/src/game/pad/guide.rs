@@ -33,6 +33,7 @@ impl Game<'_> {
         settings.enabled
             && settings.guide_detail != GuideDetail::Off
             && self.pad.in_use
+            && !self.touch_active
             && !self.pad.keyboard_took_over
             && !self.pad_in_menu()
             && !self.screen_over_playing()

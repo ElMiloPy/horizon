@@ -10,6 +10,37 @@ impl Game<'_> {
             && !self.screen_over_playing()
     }
 
+    pub(super) fn touch_aim_point(&self) -> Option<[f32; 2]> {
+        if !self.touch_active || !self.touch_playing() {
+            return None;
+        }
+        self.touch_controls.aim().or_else(|| {
+            self.touch_tapped
+                .filter(|(until, _)| Instant::now() < *until)
+                .map(|(_, p)| p)
+        })
+    }
+
+    pub(super) fn touch_aim_dir(&self) -> Option<[f64; 3]> {
+        let p = self.touch_aim_point()?;
+        let fov = self.locator_camera?.3;
+        let (gw, gh) = self.renderer.as_ref().map_or((640.0, 360.0), |r| {
+            let b = horizon_client::hud::HudBatch::new([r.config.width, r.config.height]);
+            (b.width, b.height)
+        });
+        let (sx, sy) = (
+            2.0 * f64::from(p[0]) / f64::from(gw) - 1.0,
+            1.0 - 2.0 * f64::from(p[1]) / f64::from(gh),
+        );
+        let t = (f64::from(fov).to_radians() / 2.0).tan();
+        let forward = glam::DVec3::from_array(view_vector(self.yaw, self.pitch));
+        let yaw = f64::from(self.yaw).to_radians();
+        let right = glam::DVec3::new(-yaw.cos(), 0.0, -yaw.sin());
+        let up = right.cross(forward);
+        let dir = forward + right * (sx * t * f64::from(gw) / f64::from(gh)) + up * (sy * t);
+        Some(dir.normalize().to_array())
+    }
+
     #[cfg(target_os = "android")]
     pub(super) fn android_input_frame(&mut self, event_loop: &dyn EventLoopCtl) {
         if crate::android::pointer_capture_lost() && self.captured {
@@ -109,14 +140,17 @@ impl Game<'_> {
                 let _ = self.key_pressed(winit::keyboard::KeyCode::KeyE, winit::keyboard::KeyCode::KeyE);
             }
             crate::touch::TouchAction::AttackStart => {
+                self.left = true;
                 self.pad.injected.triggers[1] = 1.0;
             }
             crate::touch::TouchAction::AttackStop => {
+                self.left = false;
                 self.pad.injected.triggers[1] = 0.0;
             }
-            crate::touch::TouchAction::Use => {
+            crate::touch::TouchAction::Use(point) => {
                 self.pad.injected.triggers[0] = 1.0;
                 self.touch_use_until = Some(Instant::now() + Duration::from_millis(80));
+                self.touch_tapped = Some((Instant::now() + Duration::from_millis(150), point));
             }
             crate::touch::TouchAction::SelectSlot(slot) => {
                 self.selected = slot;
@@ -322,6 +356,9 @@ impl Game<'_> {
         if self.touch_use_until.is_some_and(|t| Instant::now() >= t) {
             self.touch_use_until = None;
             self.pad.injected.triggers[0] = 0.0;
+        }
+        if self.touch_tapped.is_some_and(|(t, _)| Instant::now() >= t) {
+            self.touch_tapped = None;
         }
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         self.pause_if_inactive();

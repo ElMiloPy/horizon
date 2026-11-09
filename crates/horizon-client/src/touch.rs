@@ -152,7 +152,7 @@ pub enum TouchAction {
     ButtonUp(TouchButton),
     AttackStart,
     AttackStop,
-    Use,
+    Use([f32; 2]),
     SelectSlot(usize),
 }
 
@@ -336,11 +336,11 @@ impl TouchControls {
                         self.held_buttons.retain(|b| *b != btn);
                         out.push(TouchAction::ButtonUp(btn));
                     }
-                    FingerRole::Look { down, dragged, attacking, .. } => {
+                    FingerRole::Look { down, dragged, attacking, last, .. } => {
                         if attacking {
                             out.push(TouchAction::AttackStop);
                         } else if touch.phase == TouchPhase::Ended && !dragged && down.elapsed() < HOLD {
-                            out.push(TouchAction::Use);
+                            out.push(TouchAction::Use(last));
                         }
                     }
                 }
@@ -370,8 +370,28 @@ impl TouchControls {
         })
     }
 
+    /// Where a touch finger points while it may tap or while it holds to break.
+    pub fn aim(&self) -> Option<[f32; 2]> {
+        self.fingers.iter().rev().find_map(|(_, role)| match role {
+            FingerRole::Look {
+                last,
+                dragged,
+                attacking,
+                ..
+            } if !*dragged || *attacking => Some(*last),
+            _ => None,
+        })
+    }
+
+    pub fn holding(&self) -> bool {
+        self.fingers.iter().any(|(_, role)| match role {
+            FingerRole::Look { attacking, .. } => *attacking,
+            _ => false,
+        })
+    }
+
     /// Renders Starling's clean translucent Bedrock-style touch controls.
-    pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
+    pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas, mining_progress: f32) {
         let (gw, gh) = (batch.width, batch.height);
         let u = gw.min(gh) / 9.0;
         let mut ui = horizon_client::ui_theme::Ui::new(atlas, batch, (-1.0, -1.0));
@@ -415,9 +435,34 @@ impl TouchControls {
             circle(&mut ui, center, radius, fill);
         }
 
+        // 3. Touch aim & breaking circle (Bedrock / Starling)
+        if let Some(p) = self.aim() {
+            let radius = 18.0;
+            let d = ui.density;
+            let ring = |ui: &mut horizon_client::ui_theme::Ui, c: [f32; 2], r: f32, color: u32| {
+                ui.border(
+                    (c[0] - r) / d,
+                    (c[1] - r) / d,
+                    2.0 * r / d,
+                    2.0 * r / d,
+                    r / d,
+                    color,
+                );
+            };
+            ring(&mut ui, p, radius + 1.0, horizon_client::hud::rgba(0, 0, 0, 120));
+            ring(&mut ui, p, radius, horizon_client::hud::rgba(255, 255, 255, 210));
+            if self.holding() && mining_progress > 0.0 {
+                let inner = (radius - 2.0).max(0.0) * mining_progress.clamp(0.0, 1.0);
+                if inner > 0.0 {
+                    circle(&mut ui, p, inner, horizon_client::hud::rgba(255, 255, 255, 80));
+                    ring(&mut ui, p, inner, horizon_client::hud::rgba(255, 255, 255, 230));
+                }
+            }
+        }
+
         ui.finish();
 
-        // 3. Centered button labels
+        // 4. Centered button labels
         for (_, center, _, label) in self.buttons(gw, gh) {
             let tw = HudBatch::text_width(atlas, label);
             let tx = center[0] - tw * 0.5;
@@ -519,7 +564,7 @@ mod tests {
         let _ = controls.handle_touch(&make_touch(4, TouchPhase::Started, 400.0, 200.0), 1.0, gw, gh);
         let actions = controls.handle_touch(&make_touch(4, TouchPhase::Ended, 400.0, 200.0), 1.0, gw, gh);
         assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], TouchAction::Use));
+        assert!(matches!(actions[0], TouchAction::Use(_)));
     }
 
     #[test]
