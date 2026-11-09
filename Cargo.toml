@@ -106,29 +106,6 @@ codegen-units = 1
 # Optimized but quick-to-link builds for iteration: cargo build --profile fast
 [profile.fast]
 inherits = "release"
-opt-level = "z"
-lto = "thin"
-codegen-units = 1
-panic = "abort"
-incremental = false
-
-[profile.fast.package.horizon-client]
-opt-level = "z"
-[profile.fast.package.horizon-client-lib]
-opt-level = "z"
-[profile.fast.package.horizon-client-render]
-opt-level = "z"
-[profile.fast.package.horizon-client-core]
-opt-level = "z"
-[profile.fast.package.horizon-world]
-opt-level = "z"
-[profile.fast.package.horizon-items]
-opt-level = "z"
-[profile.fast.package.horizon-protocol]
-opt-level = "z"
-[profile.fast.package.horizon-command]
-opt-level = "z"
-[profile.fast.package.horizon-assets]
-opt-level = "z"
-[profile.fast.package.horizon-android]
-opt-level = "z"
+lto = false
+codegen-units = 16
+incremental = true

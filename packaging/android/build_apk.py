@@ -89,6 +89,13 @@ def run(*args, **kwargs):
 def build_library(profile):
     env = dict(os.environ)
     env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " " + PAGE_FLAGS).strip()
+    # Configure size optimizations via Cargo environment overrides so root Cargo.toml stays clean:
+    prof_upper = profile.upper().replace("-", "_")
+    env.setdefault(f"CARGO_PROFILE_{prof_upper}_OPT_LEVEL", "z")
+    env.setdefault(f"CARGO_PROFILE_{prof_upper}_LTO", "thin")
+    env.setdefault(f"CARGO_PROFILE_{prof_upper}_CODEGEN_UNITS", "1")
+    env.setdefault(f"CARGO_PROFILE_{prof_upper}_PANIC", "abort")
+    env.setdefault(f"CARGO_PROFILE_{prof_upper}_INCREMENTAL", "false")
     # Native compilation in Termux / aarch64 Android environment
     if (sys.platform.startswith("linux") or sys.platform == "android") and os.uname().machine in ("aarch64", "arm64") and not shutil.which("cargo-ndk"):
         run(
