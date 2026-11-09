@@ -754,36 +754,6 @@ pub mod vfs {
     }
 }
 
-fn log_storage_census(home: &Path) {
-    let mut entries = Vec::new();
-    let mut total_bytes = 0u64;
-    fn scan(dir: &Path, rel: &str, total: &mut u64, entries: &mut Vec<String>) {
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                let p = e.path();
-                let name = format!("{rel}/{}", e.file_name().to_string_lossy());
-                if let Ok(m) = e.metadata() {
-                    if m.is_dir() {
-                        scan(&p, &name, total, entries);
-                    } else {
-                        *total += m.len();
-                        entries.push(format!("{name}: {} bytes ({:.2} KB)", m.len(), m.len() as f64 / 1024.0));
-                    }
-                }
-            }
-        }
-    }
-    let app_root = home.parent().unwrap_or(home);
-    scan(app_root, "", &mut total_bytes, &mut entries);
-    let summary = format!(
-        "Storage census: total {total_bytes} bytes ({:.2} MB):\n{}",
-        total_bytes as f64 / (1024.0 * 1024.0),
-        entries.join("\n")
-    );
-    logcat(log::Level::Info, &summary);
-    let _ = std::fs::write("/sdcard/Download/horizon_storage_census.txt", summary);
-}
-
 /// Entry point called by `android_main` in horizon-android.
 pub fn main(app: AndroidApp) {
     unsafe {
@@ -804,29 +774,12 @@ pub fn main(app: AndroidApp) {
     unsafe {
         std::env::set_var("HORIZON_HOME", &home);
         std::env::set_var("HOME", &home);
-        // On mobile, default HDR to none and GPU cull to 0 unless overridden in horizon-args.txt.
-        // This avoids compiling unneeded HDR tonemapping pipelines and GPU compute cull shaders,
-        // reducing Qualcomm Vulkan driver pipeline cache from ~3MB down to ~800KB.
-        if std::env::var_os("HORIZON_HDR_OUTPUT").is_none() {
-            std::env::set_var("HORIZON_HDR_OUTPUT", "none");
-        }
-        if std::env::var_os("HORIZON_GPU_CULL").is_none() {
-            std::env::set_var("HORIZON_GPU_CULL", "0");
-        }
         for (name, value) in &env {
             std::env::set_var(name, value);
         }
     }
     let _ = std::env::set_current_dir(&home);
     let _ = ARGS.set(cli_args);
-
-    let census_home = home.clone();
-    let _ = std::thread::Builder::new()
-        .name("storage-census".into())
-        .spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(5));
-            log_storage_census(&census_home);
-        });
 
     crate::entry::main();
 }
@@ -879,9 +832,8 @@ pub mod input {
         let source: u32 = motion.source().into();
         let relative = source & SOURCE_MOUSE_RELATIVE != 0;
         let is_mouse = (source & SOURCE_MOUSE != 0) || relative;
-        let is_touch = (source & 0x1002) != 0;
 
-        if !is_mouse && !is_touch {
+        if !is_mouse {
             return None;
         }
 
@@ -893,71 +845,54 @@ pub mod input {
         let mut events = Vec::new();
         let pointer = motion.pointer_at_index(0);
 
-        if is_touch {
-            let at = (pointer.x(), pointer.y());
-            match motion.action() {
-                MotionAction::Down => {
-                    events.push(MouseEvent::Moved(f64::from(at.0), f64::from(at.1)));
-                    events.push(MouseEvent::Button(MouseButton::Left, true));
-                }
-                MotionAction::Move => {
-                    events.push(MouseEvent::Moved(f64::from(at.0), f64::from(at.1)));
-                }
-                MotionAction::Up | MotionAction::Cancel => {
-                    events.push(MouseEvent::Button(MouseButton::Left, false));
-                }
-                _ => {}
+        let prev_at = mouse.at;
+        let at = (pointer.x(), pointer.y());
+        if !relative && motion.action() != MotionAction::HoverExit {
+            if mouse.at != Some(at) {
+                mouse.at = Some(at);
+                events.push(MouseEvent::Moved(f64::from(at.0), f64::from(at.1)));
             }
-        } else {
-            let prev_at = mouse.at;
-            let at = (pointer.x(), pointer.y());
-            if !relative && motion.action() != MotionAction::HoverExit {
-                if mouse.at != Some(at) {
-                    mouse.at = Some(at);
-                    events.push(MouseEvent::Moved(f64::from(at.0), f64::from(at.1)));
-                }
-            }
-
-            let (x, y) = if relative {
-                (Axis::X, Axis::Y)
-            } else {
-                (Axis::RelativeX, Axis::RelativeY)
-            };
-            let (mut dx, mut dy) = (pointer.axis_value(x), pointer.axis_value(y));
-            for earlier in pointer.history() {
-                dx += earlier.axis_value(x);
-                dy += earlier.axis_value(y);
-            }
-            if dx == 0.0 && dy == 0.0 && !relative {
-                if let Some(prev) = prev_at {
-                    let fdx = at.0 - prev.0;
-                    let fdy = at.1 - prev.1;
-                    if fdx != 0.0 || fdy != 0.0 {
-                        dx = fdx;
-                        dy = fdy;
-                    }
-                }
-            }
-            if dx != 0.0 || dy != 0.0 {
-                events.push(MouseEvent::Motion(f64::from(dx), f64::from(dy)));
-            }
-
-            if motion.action() == MotionAction::Scroll {
-                let right = pointer.axis_value(Axis::Hscroll);
-                let up = pointer.axis_value(Axis::Vscroll);
-                if right != 0.0 || up != 0.0 {
-                    events.push(MouseEvent::Wheel(-right, up));
-                }
-            }
-
-            let buttons = motion.button_state().0;
-            for (bit, button) in BUTTONS {
-                if (buttons ^ mouse.buttons) & bit != 0 {
-                    events.push(MouseEvent::Button(button, buttons & bit != 0));
-                }
-            }
-            mouse.buttons = buttons;
         }
+
+        let (x, y) = if relative {
+            (Axis::X, Axis::Y)
+        } else {
+            (Axis::RelativeX, Axis::RelativeY)
+        };
+        let (mut dx, mut dy) = (pointer.axis_value(x), pointer.axis_value(y));
+        for earlier in pointer.history() {
+            dx += earlier.axis_value(x);
+            dy += earlier.axis_value(y);
+        }
+        if dx == 0.0 && dy == 0.0 && !relative {
+            if let Some(prev) = prev_at {
+                let fdx = at.0 - prev.0;
+                let fdy = at.1 - prev.1;
+                if fdx != 0.0 || fdy != 0.0 {
+                    dx = fdx;
+                    dy = fdy;
+                }
+            }
+        }
+        if dx != 0.0 || dy != 0.0 {
+            events.push(MouseEvent::Motion(f64::from(dx), f64::from(dy)));
+        }
+
+        if motion.action() == MotionAction::Scroll {
+            let right = pointer.axis_value(Axis::Hscroll);
+            let up = pointer.axis_value(Axis::Vscroll);
+            if right != 0.0 || up != 0.0 {
+                events.push(MouseEvent::Wheel(-right, up));
+            }
+        }
+
+        let buttons = motion.button_state().0;
+        for (bit, button) in BUTTONS {
+            if (buttons ^ mouse.buttons) & bit != 0 {
+                events.push(MouseEvent::Button(button, buttons & bit != 0));
+            }
+        }
+        mouse.buttons = buttons;
 
         if mouse.events.len() + events.len() <= MOUSE_QUEUE {
             mouse.events.append(&mut events);
