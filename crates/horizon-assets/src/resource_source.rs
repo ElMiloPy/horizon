@@ -245,9 +245,7 @@ fn prefix_inside(prefix: &str) -> bool {
 }
 
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>, active: &mut BTreeSet<PathBuf>) {
-    let Ok(canonical) = fs::canonicalize(dir) else {
-        return;
-    };
+    let canonical = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     if !active.insert(canonical.clone()) {
         return;
     }
