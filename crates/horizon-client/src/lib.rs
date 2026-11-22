@@ -17,6 +17,7 @@ pub mod entry;
 #[cfg(not(feature = "system-allocator"))]
 #[global_allocator]
 static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
+pub mod accounts_ui;
 pub mod game;
 pub mod orb_limits;
 pub mod server_impulse;

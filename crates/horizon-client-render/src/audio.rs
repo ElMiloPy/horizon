@@ -458,7 +458,11 @@ struct SoundCache {
     bytes: usize,
     clock: u64,
 }
-const CACHE_BYTES: usize = 64 << 20;
+const CACHE_BYTES: usize = if cfg!(target_os = "android") {
+    24 << 20
+} else {
+    64 << 20
+};
 impl SoundCache {
     fn get(&mut self, key: &str) -> Option<Samples> {
         self.clock += 1;

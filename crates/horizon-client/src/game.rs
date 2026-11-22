@@ -1156,7 +1156,12 @@ struct Game<'a> {
     /// Controllers (Horizon's own).
     pad: pad::Pads,
     touch_pointer: crate::touch::TouchPointer,
-    touch_controls: crate::touch::TouchControls,
+    touch_controls: horizon_client_render::touch::TouchControls,
+    touch_esc: crate::touch::EscButtonState,
+    touch_settings_open: bool,
+    touch_settings_ui: crate::touch::TouchSettingsOverlay,
+    accounts_ui: crate::accounts_ui::AccountsUi,
+    offline_skin_gen: u64,
     touch_active: bool,
     touch_use_until: Option<Instant>,
     touch_attack_until: Option<Instant>,
@@ -4757,6 +4762,16 @@ impl Game<'_> {
             // over them here (a pack browser over Create New World, say), and the
             // toasts still come after, as over any screen.
             self.draw_title_screen_with_post_hook(&mut batch);
+            if self.accounts_ui.is_open()
+                || self
+                    .title
+                    .as_ref()
+                    .is_some_and(|t| matches!(t.mode, horizon_client::title::Mode::Main))
+            {
+                let player_name = self.options.player_name();
+                self.accounts_ui
+                    .draw(&mut batch, &self.gui.atlas, &player_name, self.cursor);
+            }
             self.draw_toasts(&mut batch, false);
             self.draw_tutorial_toasts(&mut batch, false);
             self.draw_pack_toasts(&mut batch, false);
@@ -4802,6 +4817,11 @@ impl Game<'_> {
             // Combat feel Legacy hides the attack indicator unless the player keeps it.
             let indicator = if self.pvp_hides_attack_indicator() {
                 0
+            } else if self.touch_active {
+                horizon_client_render::touch::attack_indicator(
+                    self.settings.attack_indicator,
+                    self.touch_controls.crosshair(),
+                )
             } else {
                 self.settings.attack_indicator
             };
@@ -4813,7 +4833,9 @@ impl Game<'_> {
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
                 && !self.overlay_holds_view()
-                && !(self.touch_active && self.touch_playing())
+                && !(self.touch_active
+                    && self.touch_playing()
+                    && !self.touch_controls.crosshair())
             {
                 let attack = (indicator == 1).then_some(strength);
                 let full = attack.is_some_and(|a| {
@@ -5158,12 +5180,19 @@ impl Game<'_> {
         if show_hud {
             self.draw_pad_guide(&mut batch, guide_from);
         }
-        if self.touch_active && !self.ui.hide_gui {
+        if self.touch_settings_open {
+            self.touch_settings_ui.draw(
+                &mut batch,
+                &self.gui.atlas,
+                &self.touch_controls.settings,
+                self.cursor,
+            );
+        } else if self.touch_active && !self.ui.hide_gui {
             if self.touch_playing() {
-                let progress = self.mining.as_ref().map_or(0.0, |m| m.progress);
-                self.touch_controls.draw(&mut batch, &self.gui.atlas, progress);
+                self.touch_controls.draw(&mut batch, &self.gui.atlas);
             } else if self.touch_screen_shows_esc() {
-                self.touch_controls.draw_esc(&mut batch, &self.gui.atlas);
+                self.touch_controls
+                    .draw_esc(&mut batch, &self.gui.atlas, self.touch_esc.is_pressed());
             }
         }
         batch
@@ -8320,7 +8349,9 @@ impl Game<'_> {
             self.entity_targeted(),
             can_build,
             self.shows_panorama(),
-        ) && (!self.touch_active || self.touch_aim_point().is_some())
+        ) && (!self.touch_active
+            || self.touch_controls.crosshair()
+            || self.touch_aim_point().is_some())
         {
             self.pick()
                 .filter(|h| {
@@ -9600,6 +9631,22 @@ impl Game<'_> {
                     button: MouseButton::Left,
                     ..
                 } if self.title_input_active() && state == ElementState::Pressed => {
+                    if self.accounts_ui.is_open()
+                        || self
+                            .title
+                            .as_ref()
+                            .is_some_and(|t| matches!(t.mode, horizon_client::title::Mode::Main))
+                    {
+                        let (consumed, new_name) =
+                            self.accounts_ui.click(self.cursor.0, self.cursor.1);
+                        if let Some(name) = new_name {
+                            self.options.player_name = Some(name);
+                        }
+                        if consumed {
+                            self.audio.play_button_click();
+                            return Ok(());
+                        }
+                    }
                     let size = self
                         .renderer
                         .as_ref()
@@ -9659,6 +9706,26 @@ impl Game<'_> {
                             .map(|r| [r.config.width, r.config.height])
                             .unwrap_or([1, 1]);
                         self.sign_edit_click(size);
+                    }
+                }
+                WindowEvent::MouseInput { state, button, .. } if self.touch_settings_open => {
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        match self.touch_settings_ui.click(
+                            self.cursor.0,
+                            self.cursor.1,
+                            &mut self.touch_controls.settings,
+                        ) {
+                            crate::touch::TouchSettingsAction::Changed => {
+                                crate::touch::save_touch_settings(&self.touch_controls.settings);
+                                self.audio.play_button_click();
+                            }
+                            crate::touch::TouchSettingsAction::Close => {
+                                crate::touch::save_touch_settings(&self.touch_controls.settings);
+                                self.touch_settings_open = false;
+                                self.audio.play_button_click();
+                            }
+                            crate::touch::TouchSettingsAction::None => {}
+                        }
                     }
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
@@ -10009,6 +10076,20 @@ impl Game<'_> {
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.title_input_active() => {
+                    if event.state == ElementState::Pressed && self.accounts_ui.is_open() {
+                        let code = match event.physical_key {
+                            PhysicalKey::Code(k) => Some(k),
+                            _ => None,
+                        };
+                        let (consumed, new_name) =
+                            self.accounts_ui.key(code, event.text.as_deref());
+                        if let Some(name) = new_name {
+                            self.options.player_name = Some(name);
+                        }
+                        if consumed {
+                            return Ok(());
+                        }
+                    }
                     if event.state == ElementState::Pressed {
                         if let Some(shortcut) = self.edit_shortcut(&event) {
                             self.title_shortcut(shortcut);
@@ -10110,6 +10191,13 @@ impl Game<'_> {
                         return Ok(());
                     };
                     let pressed = event.state == ElementState::Pressed;
+                    if self.touch_settings_open {
+                        if pressed && key == KeyCode::Escape {
+                            crate::touch::save_touch_settings(&self.touch_controls.settings);
+                            self.touch_settings_open = false;
+                        }
+                        return Ok(());
+                    }
                     if self.key_press_canceled(key, pressed, event.repeat) {
                         return Ok(());
                     }
@@ -10685,7 +10773,12 @@ impl<'a> Game<'a> {
             last_input: now,
             pad: Default::default(),
             touch_pointer: Default::default(),
-            touch_controls: Default::default(),
+            touch_controls: crate::touch::load_touch_controls(),
+            touch_esc: Default::default(),
+            touch_settings_open: false,
+            touch_settings_ui: Default::default(),
+            accounts_ui: crate::accounts_ui::AccountsUi::new(),
+            offline_skin_gen: 0,
             touch_active: cfg!(target_os = "android"),
             touch_use_until: None,
             touch_attack_until: None,

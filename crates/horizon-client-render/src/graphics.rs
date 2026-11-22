@@ -984,7 +984,11 @@ impl Default for Graphics {
             entity_culling: EntityCullingMode::Off,
             entity_culling_precheck: 64,
             particle_culling: ParticleCullingMode::Off,
-            leaf_culling: LeafCullingMode::Off,
+            leaf_culling: if cfg!(target_os = "android") {
+                LeafCullingMode::Solid
+            } else {
+                LeafCullingMode::Off
+            },
             opaque_ice: false,
             cache_shulker_boxes: false,
             // Sign text has used its renderer cache independently of the new model caches.
@@ -995,7 +999,7 @@ impl Default for Graphics {
             cache_banners: false,
             cache_copper_golem_statues: false,
             chunk_updates: 0,
-            upload_budget_kib: 0,
+            upload_budget_kib: if cfg!(target_os = "android") { 2048 } else { 0 },
             texture_budget_mib: 0,
             sky: true,
             fog: true,
@@ -1381,7 +1385,12 @@ impl Graphics {
         // raises its server thread). Leaving two idled a core of a 4-thread
         // laptop while a world loaded: a teleport there took ~15% longer. On Apple
         // silicon only the performance cores count (horizon_threads::default_workers).
-        horizon_threads::sizing::for_pool_with(self.battery, horizon_threads::sizing::Pool::Jobs)
+        let workers = horizon_threads::sizing::for_pool_with(self.battery, horizon_threads::sizing::Pool::Jobs);
+        if cfg!(target_os = "android") {
+            workers.min(4)
+        } else {
+            workers
+        }
     }
     /// The frame cap battery mode adds: 60 in a world, 30 in menus without a
     /// world or while another window has focus.

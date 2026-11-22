@@ -13,7 +13,9 @@ use crate::gamepad::{Button, PadState};
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::lang;
 
+#[allow(dead_code)]
 const BUTTON: &str = "gui/sprites/widget/button";
+#[allow(dead_code)]
 const BUTTON_HELD: &str = "gui/sprites/widget/button_highlighted";
 
 impl TouchControls {
@@ -37,7 +39,10 @@ impl TouchControls {
                     .fingers
                     .values()
                     .any(|(_, point)| layout::contains(rect, *point));
-            button(b, a, bounds, &self.label(control), pressed, color);
+            if !self.draw_bedrock_control(b, a, control, bounds, pressed, color) {
+                let icon = self.icon_kind(control);
+                icon_button(b, a, bounds, icon, &self.label(control), pressed, color);
+            }
         }
         self.draw_custom(b, a);
         if let Some(point) = self.pointer() {
@@ -125,24 +130,423 @@ impl TouchControls {
         let [x, y, size, _] = square(b, center, p.size);
         if self.settings.mode == Mode::Dpad {
             let cell = size / 3.0;
-            for ([dx, dy], label, pressed) in dpad(state.left) {
+            for ([dx, dy], name, icon, pressed) in [
+                ([1.0, 0.0], "up", IconKind::Up, state.left[1] > 0.2),
+                ([0.0, 1.0], "left", IconKind::Left, state.left[0] < -0.2),
+                ([2.0, 1.0], "right", IconKind::Right, state.left[0] > 0.2),
+                ([1.0, 2.0], "down", IconKind::Down, state.left[1] < -0.2),
+            ] {
                 let bounds = [x + cell * dx, y + cell * dy, cell, cell];
-                button(b, a, bounds, label, pressed, color);
+                let sprite_name = if pressed {
+                    format!("controls/{name}_pressed")
+                } else {
+                    format!("controls/{name}")
+                };
+                if !draw_bedrock_sprite(b, a, &sprite_name, bounds, color) {
+                    icon_button(b, a, bounds, icon, "", pressed, color);
+                }
             }
             return;
         }
         let middle = [x + size / 2.0, y + size / 2.0];
+        let knob_pos = knob(middle, state.left, size);
+        if draw_bedrock_sprite(b, a, "ui/joystick_frame", [x, y, size, size], color) {
+            let ks = size * 0.34;
+            let _ = draw_bedrock_sprite(
+                b,
+                a,
+                "ui/joystick_knob",
+                [knob_pos[0] - ks * 0.5, knob_pos[1] - ks * 0.5, ks, ks],
+                color,
+            );
+            return;
+        }
         let [r, g, blue, opacity] = color.to_le_bytes();
         ring(b, a, middle, size / 2.0, color);
         disc(b, a, middle, size / 2.0, rgba(0, 0, 0, opacity / 3));
-        let knob = knob(middle, state.left, size);
-        disc(b, a, knob, size * 0.17, rgba(r, g, blue, opacity / 2));
-        ring(b, a, knob, size * 0.17, color);
+        disc(b, a, knob_pos, size * 0.17, rgba(r, g, blue, opacity / 2));
+        ring(b, a, knob_pos, size * 0.17, color);
+    }
+
+    /// Draws Starling's Bedrock touch sprite from `gui/bedrock/...` when loaded in `HudAtlas`.
+    /// Returns `false` if the Bedrock touch assets are not loaded, falling back to procedural icons.
+    fn draw_bedrock_control(
+        &self,
+        b: &mut HudBatch,
+        a: &HudAtlas,
+        control: Control,
+        bounds: [f32; 4],
+        pressed: bool,
+        color: u32,
+    ) -> bool {
+        let [x, y, w, h] = bounds;
+        match control {
+            Control::Chat => draw_bedrock_gui_region(b, a, [200.0, 82.0, 18.0, 18.0], bounds, color),
+            Control::Debug => draw_bedrock_gui_region(b, a, [236.0, 82.0, 18.0, 18.0], bounds, color),
+            Control::Perspective => {
+                draw_bedrock_gui_region(b, a, [236.0, 46.0, 18.0, 18.0], bounds, color)
+            }
+            Control::Pause | Control::Settings => {
+                if !draw_bedrock_menu_frame(b, a, bounds, color) {
+                    return false;
+                }
+                let icon = if control == Control::Pause {
+                    "ui/pause_icon"
+                } else {
+                    "ui/gear"
+                };
+                draw_bedrock_sprite(
+                    b,
+                    a,
+                    icon,
+                    [x + w * 0.23, y + h * 0.23, w * 0.54, h * 0.54],
+                    color,
+                )
+            }
+            Control::Inventory => {
+                if !draw_bedrock_sprite(b, a, "ui/joystick_knob", bounds, color) {
+                    return false;
+                }
+                draw_bedrock_sprite(
+                    b,
+                    a,
+                    "ui/more-dots",
+                    [x + w * 0.2, y + h * 0.2, w * 0.6, h * 0.6],
+                    color,
+                )
+            }
+            Control::Offhand | Control::Shield | Control::Move => false,
+            _ => {
+                let base = match control {
+                    Control::Sprint => "ui/sprint",
+                    Control::Attack => "ui/attack",
+                    Control::Use => "ui/interact",
+                    Control::Jump if self.swimming => "controls/waterascend",
+                    Control::Sneak if self.swimming => "controls/waterdescend",
+                    Control::Jump if self.vertical_movement => "controls/flyingascend",
+                    Control::Sneak if self.vertical_movement => "controls/flyingdescend",
+                    Control::Sneak if self.mounted => "controls/dismount",
+                    Control::Jump if self.settings.mode == Mode::Dpad => "controls/jump_dpad",
+                    Control::Sneak if self.settings.mode == Mode::Dpad => "controls/sneak_dpad",
+                    Control::Jump => "ui/jump",
+                    Control::Sneak => "ui/sneak",
+                    _ => return false,
+                };
+                if pressed
+                    && draw_bedrock_sprite(b, a, &format!("{base}_pressed"), bounds, color)
+                {
+                    return true;
+                }
+                draw_bedrock_sprite(b, a, base, bounds, color)
+            }
+        }
+    }
+
+    fn icon_kind(&self, control: Control) -> IconKind {
+        let vertical = self.swimming || self.vertical_movement;
+        match control {
+            Control::Move => IconKind::Text,
+            Control::Jump => IconKind::Up,
+            Control::Sneak if vertical => IconKind::Down,
+            Control::Sneak => IconKind::Sneak,
+            Control::Attack => IconKind::Attack,
+            Control::Use => IconKind::Use,
+            Control::Sprint => IconKind::Sprint,
+            Control::Inventory => IconKind::Inventory,
+            Control::Pause => IconKind::Pause,
+            Control::Chat => IconKind::Chat,
+            Control::Settings => IconKind::Settings,
+            Control::Debug => IconKind::Text,
+            Control::Perspective => IconKind::Perspective,
+            Control::Offhand => IconKind::Offhand,
+            Control::Shield => IconKind::Shield,
+        }
+    }
+
+    /// Draws the Pause/Esc icon button at its placement when an inventory or
+    /// container screen is open, so touch players can always exit without a keyboard.
+    pub fn draw_esc(&self, b: &mut HudBatch, a: &HudAtlas, pressed: bool) {
+        let p = self.esc_placement();
+        let bounds = square(b, p.center, p.size);
+        let color = rgba(255, 255, 255, alpha(p.opacity.max(0.75)));
+        icon_button(b, a, bounds, IconKind::Close, "Esc", pressed, color);
+    }
+
+    /// Placement of the Esc overlay button in normalized coordinates.
+    pub fn esc_placement(&self) -> Placement {
+        let mut p = self.placement(Control::Pause);
+        p.size = p.size.max(0.11);
+        p
+    }
+
+    /// Hit-test rectangle `[x, y, w, h]` of the Esc overlay button in normalized coordinates.
+    pub fn esc_rect(&self) -> [f32; 4] {
+        self.esc_placement().rect(self.aspect())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum IconKind {
+    Up,
+    Down,
+    Left,
+    Right,
+    Sneak,
+    Attack,
+    Use,
+    Sprint,
+    Inventory,
+    Pause,
+    Close,
+    Chat,
+    Settings,
+    Perspective,
+    Offhand,
+    Shield,
+    Text,
+}
+
+#[allow(dead_code)]
+fn dpad_icons(left: [f32; 2]) -> [([f32; 2], IconKind, bool); 4] {
+    [
+        ([1.0, 0.0], IconKind::Up, left[1] > 0.2),
+        ([0.0, 1.0], IconKind::Left, left[0] < -0.2),
+        ([2.0, 1.0], IconKind::Right, left[0] > 0.2),
+        ([1.0, 2.0], IconKind::Down, left[1] < -0.2),
+    ]
+}
+
+fn draw_bedrock_sprite(
+    b: &mut HudBatch,
+    a: &HudAtlas,
+    name: &str,
+    [x, y, w, h]: [f32; 4],
+    color: u32,
+) -> bool {
+    let Some(r) = a.sprites.get(&format!("gui/bedrock/{name}")).copied() else {
+        return false;
+    };
+    let scale = (w / r.w.max(1) as f32).min(h / r.h.max(1) as f32);
+    let dw = r.w as f32 * scale;
+    let dh = r.h as f32 * scale;
+    let dx = x + (w - dw) * 0.5;
+    let dy = y + (h - dh) * 0.5;
+    b.quad(
+        [[dx, dy], [dx + dw, dy], [dx + dw, dy + dh], [dx, dy + dh]],
+        [[r.u0, r.v0], [r.u1, r.v0], [r.u1, r.v1], [r.u0, r.v1]],
+        color,
+    );
+    true
+}
+
+fn draw_bedrock_gui_region(
+    b: &mut HudBatch,
+    a: &HudAtlas,
+    [sx, sy, sw, sh]: [f32; 4],
+    [x, y, w, h]: [f32; 4],
+    color: u32,
+) -> bool {
+    let Some(r) = a.sprites.get("gui/bedrock/gui").copied() else {
+        return false;
+    };
+    let rw = r.w.max(1) as f32;
+    let rh = r.h.max(1) as f32;
+    let u0 = r.u0 + (r.u1 - r.u0) * (sx / rw);
+    let u1 = r.u0 + (r.u1 - r.u0) * ((sx + sw) / rw);
+    let v0 = r.v0 + (r.v1 - r.v0) * (sy / rh);
+    let v1 = r.v0 + (r.v1 - r.v0) * ((sy + sh) / rh);
+    b.quad(
+        [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+        [[u0, v0], [u1, v0], [u1, v1], [u0, v1]],
+        color,
+    );
+    true
+}
+
+fn draw_bedrock_menu_frame(
+    b: &mut HudBatch,
+    a: &HudAtlas,
+    [x, y, w, h]: [f32; 4],
+    color: u32,
+) -> bool {
+    if !a.sprites.contains_key("gui/bedrock/gui") {
+        return false;
+    }
+    let border = (w / 18.0 * 2.0).min(h / 2.0);
+    let xs = [200.0, 202.0, 216.0, 218.0];
+    let ys = [82.0, 84.0, 96.0, 100.0];
+    let dx = [x, x + border, x + w - border, x + w];
+    let dy = [y, y + border, y + h - border * 2.0, y + h];
+    for row in 0..3 {
+        for col in 0..3 {
+            let source = if row == 1 && col == 1 {
+                [202.0, 84.0, 1.0, 1.0]
+            } else {
+                [xs[col], ys[row], xs[col + 1] - xs[col], ys[row + 1] - ys[row]]
+            };
+            draw_bedrock_gui_region(
+                b,
+                a,
+                source,
+                [dx[col], dy[row], dx[col + 1] - dx[col], dy[row + 1] - dy[row]],
+                color,
+            );
+        }
+    }
+    true
+}
+
+/// Starling's classic MCPE double-bevel stone plate + pixel-art icon.
+fn icon_button(
+    b: &mut HudBatch,
+    a: &HudAtlas,
+    bounds: [f32; 4],
+    icon: IconKind,
+    label: &str,
+    pressed: bool,
+    color: u32,
+) {
+    let [x, y, w, h] = bounds;
+    let opacity = (color >> 24) as u8;
+    let (bg_a, hi_rgb, lo_rgb) = if pressed {
+        (215u16, 130u8, 220u8)
+    } else {
+        (175u16, 215u8, 28u8)
+    };
+    let bg = rgba(58, 58, 62, (u16::from(opacity) * bg_a / 255) as u8);
+    let hi = rgba(hi_rgb, hi_rgb, hi_rgb.saturating_add(7), (u16::from(opacity) * 210 / 255) as u8);
+    let lo = rgba(lo_rgb, lo_rgb, lo_rgb.saturating_add(4), (u16::from(opacity) * 220 / 255) as u8);
+    let fg = if pressed {
+        rgba(255, 245, 180, opacity)
+    } else {
+        rgba(242, 242, 246, opacity)
+    };
+    let bw = (w.min(h) * 0.065).clamp(1.2, 3.0);
+    b.fill(a, x, y, w, h, lo);
+    b.fill(
+        a,
+        x + bw,
+        y + bw,
+        (w - bw * 2.0).max(1.0),
+        (h - bw * 2.0).max(1.0),
+        bg,
+    );
+    b.fill(a, x + bw, y + bw, (w - bw * 2.0).max(1.0), bw, hi);
+    b.fill(a, x + bw, y + bw, bw, (h - bw * 2.0).max(1.0), hi);
+
+    let cx = x + w * 0.5;
+    let cy = y + h * 0.5 + if pressed { bw * 0.35 } else { 0.0 };
+    let u = w.min(h) * 0.08;
+    match icon {
+        IconKind::Up => {
+            b.fill(a, cx - u, cy - u * 2.5, u * 2.0, u, fg);
+            b.fill(a, cx - u * 2.0, cy - u * 1.5, u * 4.0, u, fg);
+            b.fill(a, cx - u * 3.0, cy - u * 0.5, u * 6.0, u, fg);
+            b.fill(a, cx - u, cy + u * 0.5, u * 2.0, u * 2.2, fg);
+        }
+        IconKind::Down => {
+            b.fill(a, cx - u, cy - u * 2.5, u * 2.0, u * 2.2, fg);
+            b.fill(a, cx - u * 3.0, cy - u * 0.3, u * 6.0, u, fg);
+            b.fill(a, cx - u * 2.0, cy + u * 0.7, u * 4.0, u, fg);
+            b.fill(a, cx - u, cy + u * 1.7, u * 2.0, u, fg);
+        }
+        IconKind::Left => {
+            b.fill(a, cx - u * 2.5, cy - u, u, u * 2.0, fg);
+            b.fill(a, cx - u * 1.5, cy - u * 2.0, u, u * 4.0, fg);
+            b.fill(a, cx - u * 0.5, cy - u * 3.0, u, u * 6.0, fg);
+            b.fill(a, cx + u * 0.5, cy - u, u * 2.2, u * 2.0, fg);
+        }
+        IconKind::Right => {
+            b.fill(a, cx - u * 2.7, cy - u, u * 2.2, u * 2.0, fg);
+            b.fill(a, cx - u * 0.5, cy - u * 3.0, u, u * 6.0, fg);
+            b.fill(a, cx + u * 0.5, cy - u * 2.0, u, u * 4.0, fg);
+            b.fill(a, cx + u * 1.5, cy - u, u, u * 2.0, fg);
+        }
+        IconKind::Sneak => {
+            b.fill(a, cx - u, cy - u * 2.2, u * 2.0, u * 4.4, fg);
+            b.fill(a, cx - u * 2.2, cy - u, u * 4.4, u * 2.0, fg);
+            b.fill(a, cx - u * 0.8, cy - u * 0.8, u * 1.6, u * 1.6, bg);
+        }
+        IconKind::Attack => {
+            for step in -2..=2 {
+                let sf = step as f32 * u;
+                b.fill(a, cx + sf - u * 0.6, cy - sf - u * 0.6, u * 1.3, u * 1.3, fg);
+            }
+            b.fill(a, cx - u * 2.4, cy + u * 0.4, u * 2.6, u * 0.9, fg);
+        }
+        IconKind::Use => {
+            b.fill(a, cx - u * 2.8, cy - u * 0.45, u * 5.6, u * 0.9, fg);
+            b.fill(a, cx - u * 0.45, cy - u * 2.8, u * 0.9, u * 5.6, fg);
+        }
+        IconKind::Sprint => {
+            for ox in [-1.6f32, 0.8] {
+                let bx = cx + ox * u;
+                b.fill(a, bx - u * 0.4, cy - u * 2.0, u, u, fg);
+                b.fill(a, bx + u * 0.4, cy - u, u, u * 2.0, fg);
+                b.fill(a, bx - u * 0.4, cy + u, u, u, fg);
+            }
+        }
+        IconKind::Inventory => {
+            for dx in [-2.2f32, 0.0, 2.2] {
+                b.fill(a, cx + dx * u - u * 0.6, cy - u * 0.6, u * 1.2, u * 1.2, fg);
+            }
+        }
+        IconKind::Pause => {
+            b.fill(a, cx - u * 1.8, cy - u * 2.2, u * 1.2, u * 4.4, fg);
+            b.fill(a, cx + u * 0.6, cy - u * 2.2, u * 1.2, u * 4.4, fg);
+        }
+        IconKind::Close => {
+            for step in -2..=2 {
+                let sf = step as f32 * u * 0.9;
+                b.fill(a, cx + sf - u * 0.55, cy + sf - u * 0.55, u * 1.1, u * 1.1, fg);
+                b.fill(a, cx + sf - u * 0.55, cy - sf - u * 0.55, u * 1.1, u * 1.1, fg);
+            }
+        }
+        IconKind::Chat => {
+            b.fill(a, cx - u * 2.5, cy - u * 2.0, u * 5.0, u * 3.2, fg);
+            b.fill(a, cx - u * 1.7, cy - u * 1.2, u * 3.4, u * 1.6, bg);
+            b.fill(a, cx - u * 1.4, cy + u * 1.2, u * 1.2, u * 1.1, fg);
+        }
+        IconKind::Settings => {
+            b.fill(a, cx - u * 1.8, cy - u * 1.8, u * 3.6, u * 3.6, fg);
+            b.fill(a, cx - u * 0.8, cy - u * 0.8, u * 1.6, u * 1.6, bg);
+            b.fill(a, cx - u * 0.6, cy - u * 2.7, u * 1.2, u * 5.4, fg);
+            b.fill(a, cx - u * 2.7, cy - u * 0.6, u * 5.4, u * 1.2, fg);
+            b.fill(a, cx - u * 0.8, cy - u * 0.8, u * 1.6, u * 1.6, bg);
+        }
+        IconKind::Perspective => {
+            b.fill(a, cx - u * 2.6, cy - u * 1.2, u * 5.2, u * 2.4, fg);
+            b.fill(a, cx - u * 1.8, cy - u * 0.6, u * 3.6, u * 1.2, bg);
+            b.fill(a, cx - u * 0.7, cy - u * 0.7, u * 1.4, u * 1.4, fg);
+        }
+        IconKind::Offhand => {
+            b.fill(a, cx - u * 2.4, cy - u * 1.4, u * 4.0, u * 0.9, fg);
+            b.fill(a, cx + u * 1.0, cy - u * 2.0, u * 1.2, u * 2.1, fg);
+            b.fill(a, cx - u * 1.6, cy + u * 0.5, u * 4.0, u * 0.9, fg);
+            b.fill(a, cx - u * 2.2, cy - u * 0.1, u * 1.2, u * 2.1, fg);
+        }
+        IconKind::Shield => {
+            b.fill(a, cx - u * 2.0, cy - u * 2.2, u * 4.0, u * 3.0, fg);
+            b.fill(a, cx - u * 1.3, cy + u * 0.8, u * 2.6, u * 1.0, fg);
+            b.fill(a, cx - u * 0.6, cy + u * 1.8, u * 1.2, u * 0.8, fg);
+            b.fill(a, cx - u * 1.2, cy - u * 1.4, u * 2.4, u * 2.0, bg);
+        }
+        IconKind::Text => {
+            if !label.is_empty() {
+                let width = HudBatch::text_width(a, label);
+                let start = b.vertices.len();
+                b.text(a, label, cx - width * 0.5, cy - 4.0, fg, true);
+                let scale = ((w - 6.0).max(1.0) / width.max(1.0))
+                    .min(((h - 6.0).max(1.0) / 8.0).min(1.0));
+                b.scale_since(start, cx, cy, scale, scale);
+            }
+        }
     }
 }
 
 /// The D-pad's arrows: each one's cell in a 3x3 grid, its label and whether
 /// the stick (`left`, up positive) presses it.
+#[allow(dead_code)]
 fn dpad(left: [f32; 2]) -> [([f32; 2], &'static str, bool); 4] {
     [
         ([1.0, 0.0], "^", left[1] > 0.2),

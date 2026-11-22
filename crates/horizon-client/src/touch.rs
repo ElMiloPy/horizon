@@ -1,25 +1,22 @@
-//! Touch controls for Android (Bedrock/Starling layout):
-//! - Off the playing screen (menus, options, inventories, etc.): touches become mouse pointer events.
-//! - On the playing screen:
-//!   - Floating stick on the bottom-left controls movement and sprinting.
-//!   - Action buttons (Jump, Sneak, Pause, Chat, Bag) on clean, translucent Bedrock-style discs.
-//!   - World touches:
-//!     - Tap (< 300ms, still): Use / Interact / Place block.
-//!     - Hold (>= 300ms, still): Mine / Break block.
-//!     - Drag: Smooth camera look.
-//!   - Hotbar: Tapping hotbar slots selects the active slot.
+//! Touch controls for Android (adapted from Starling,
+//! https://github.com/starling-client/starling):
+//! - Off the playing screen (menus, options, inventories, etc.): [`TouchPointer`] turns touch
+//!   gestures into mouse pointer clicks, drags, and scroll-wheel events.
+//! - On the playing screen: delegates to `horizon_client_render::touch::TouchControls` (all 4
+//!   Starling control schemes with MCPE double-bevel pixel-art icons, saved in `touch.json`).
+//! - In-game [`TouchSettingsOverlay`] lets players switch schemes and tune scale, opacity,
+//!   sensitivity, left-handed layout, and dynamic joystick without leaving the world.
 
-use std::time::{Duration, Instant};
+use horizon_client::hud::{HudAtlas, HudBatch, rgba};
+use horizon_client_render::touch::{Mode, Settings, TouchControls, layout};
+use std::path::PathBuf;
 use winit::{
     dpi::PhysicalPosition,
     event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent},
 };
-use horizon_client::hud::{HudAtlas, HudBatch};
 
 /// Menu scroll/tap slop in physical pixels.
 pub const SLOP_PX: f32 = 14.0;
-/// Holding still this long starts breaking blocks in view.
-pub const HOLD: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum MenuGesture {
@@ -135,137 +132,96 @@ impl TouchPointer {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TouchButton {
-    Jump,
-    Sneak,
-    Pause,
-    Chat,
-    Inventory,
+/// Default settings for first-time touch users: Joystick & Tap-to-Interact with
+/// joystick sprinting, matching Starling/MCPE defaults while allowing one-tap
+/// switching to all 4 schemes via the Settings gear button.
+pub fn default_touch_settings() -> Settings {
+    let mut s = Settings::default();
+    s.mode = Mode::Tap;
+    s.sprint_with_joystick = true;
+    s
 }
 
-pub enum TouchAction {
-    Stick([f32; 2]),
-    Sprint(bool),
-    Look(f64, f64),
-    ButtonDown(TouchButton),
-    ButtonUp(TouchButton),
-    AttackStart,
-    AttackStop,
-    Use([f32; 2]),
-    SelectSlot(usize),
+/// Path where touch settings are persisted (`<HORIZON_HOME>/touch.json`).
+pub fn touch_settings_path() -> PathBuf {
+    horizon_client::logging::player_dir().join("touch.json")
 }
 
-#[derive(Clone, Debug)]
-enum FingerRole {
-    Stick {
-        origin: [f32; 2],
-        current: [f32; 2],
-        sprinting: bool,
-    },
-    Look {
-        start: [f32; 2],
-        last: [f32; 2],
-        down: Instant,
-        dragged: bool,
-        attacking: bool,
-    },
-    Button(TouchButton),
+/// Loads saved touch settings or falls back to [`default_touch_settings`].
+pub fn load_touch_controls() -> TouchControls {
+    let path = touch_settings_path();
+    let settings = if path.is_file() {
+        Settings::load(&path)
+    } else {
+        default_touch_settings()
+    };
+    let mut tc = TouchControls::default();
+    tc.settings = settings;
+    tc
 }
 
+/// Saves touch settings to `<HORIZON_HOME>/touch.json`.
+pub fn save_touch_settings(settings: &Settings) {
+    let path = touch_settings_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = settings.save(&path) {
+        log::warn!("Could not save touch settings ({}): {e}", path.display());
+    }
+}
+
+/// Tracks a finger pressing the Esc icon button while an inventory/container screen is open.
 #[derive(Default)]
-pub struct TouchControls {
-    fingers: Vec<(u64, FingerRole)>,
-    held_buttons: Vec<TouchButton>,
-    pub esc_finger: Option<u64>,
+pub struct EscButtonState {
+    pub finger: Option<u64>,
 }
 
-impl TouchControls {
-    pub fn reset(&mut self) -> Vec<TouchAction> {
-        self.esc_finger = None;
-        self.reset_gameplay()
-    }
-
-    pub fn reset_gameplay(&mut self) -> Vec<TouchAction> {
-        let mut out = Vec::new();
-        for btn in self.held_buttons.drain(..) {
-            out.push(TouchAction::ButtonUp(btn));
-        }
-        for (_, role) in self.fingers.drain(..) {
-            match role {
-                FingerRole::Stick { sprinting, .. } => {
-                    out.push(TouchAction::Stick([0.0, 0.0]));
-                    if sprinting {
-                        out.push(TouchAction::Sprint(false));
-                    }
-                }
-                FingerRole::Look { attacking: true, .. } => {
-                    out.push(TouchAction::AttackStop);
-                }
-                _ => {}
-            }
-        }
-        out
-    }
-
-    /// Action buttons laid out matching Starling / Bedrock proportions.
-    /// Returns: (button, center [x, y], radius, label).
-    pub fn buttons(&self, gw: f32, gh: f32) -> Vec<(TouchButton, [f32; 2], f32, &'static str)> {
-        let u = gw.min(gh) / 9.0;
-        vec![
-            (TouchButton::Jump, [0.905 * gw, 0.7556 * gh], 0.8 * u, "Jump"),
-            (TouchButton::Sneak, [0.805 * gw, 0.8556 * gh], 0.6 * u, "Sneak"),
-            (TouchButton::Pause, [0.50 * gw, 0.0833 * gh], 0.45 * u, "Esc"),
-            (TouchButton::Chat, [0.88 * gw, 0.111 * gh], 0.55 * u, "Chat"),
-            (TouchButton::Inventory, [0.95 * gw, 0.111 * gh], 0.55 * u, "Bag"),
-        ]
-    }
-
-    /// Center and radius of the Esc button in GUI coordinates.
-    pub fn esc_button(&self, gw: f32, gh: f32) -> ([f32; 2], f32) {
-        let u = gw.min(gh) / 9.0;
-        ([0.50 * gw, 0.0833 * gh], 0.45 * u)
-    }
-
-    /// Checks and handles touch input on the Esc button when an overlay/inventory screen is open.
+impl EscButtonState {
+    /// Handles a touch event against `esc_rect` (normalized `[x, y, w, h]`).
     /// Returns `(consumed, triggered)`.
-    pub fn handle_esc_touch(&mut self, touch: &Touch, gui_scale: f32, gw: f32, gh: f32) -> (bool, bool) {
-        let (center, radius) = self.esc_button(gw, gh);
-        let p = [
-            (touch.location.x as f32) / gui_scale.max(1.0),
-            (touch.location.y as f32) / gui_scale.max(1.0),
+    pub fn handle(
+        &mut self,
+        touch: &Touch,
+        surface_w: f32,
+        surface_h: f32,
+        esc_rect: [f32; 4],
+    ) -> (bool, bool) {
+        let point = [
+            touch.location.x as f32 / surface_w.max(1.0),
+            touch.location.y as f32 / surface_h.max(1.0),
         ];
-        let dx = p[0] - center[0];
-        let dy = p[1] - center[1];
-        let in_esc = (dx * dx + dy * dy).sqrt() <= radius * 1.35;
-
+        // Slight padding around the visual button so quick taps register comfortably.
+        let pad_x = esc_rect[2] * 0.2;
+        let pad_y = esc_rect[3] * 0.2;
+        let padded = [
+            esc_rect[0] - pad_x,
+            esc_rect[1] - pad_y,
+            esc_rect[2] + pad_x * 2.0,
+            esc_rect[3] + pad_y * 2.0,
+        ];
+        let inside = layout::contains(padded, point);
         match touch.phase {
             TouchPhase::Started => {
-                if in_esc {
-                    self.esc_finger = Some(touch.id);
+                if inside {
+                    self.finger = Some(touch.id);
                     (true, false)
                 } else {
                     (false, false)
                 }
             }
-            TouchPhase::Moved => {
-                if self.esc_finger == Some(touch.id) {
-                    (true, false)
-                } else {
-                    (false, false)
-                }
-            }
+            TouchPhase::Moved => (self.finger == Some(touch.id), false),
             TouchPhase::Ended => {
-                if self.esc_finger == Some(touch.id) {
-                    self.esc_finger = None;
-                    (true, in_esc)
+                if self.finger == Some(touch.id) {
+                    self.finger = None;
+                    (true, inside)
                 } else {
                     (false, false)
                 }
             }
             TouchPhase::Cancelled => {
-                if self.esc_finger == Some(touch.id) {
-                    self.esc_finger = None;
+                if self.finger == Some(touch.id) {
+                    self.finger = None;
                     (true, false)
                 } else {
                     (false, false)
@@ -274,297 +230,308 @@ impl TouchControls {
         }
     }
 
-    /// Draws the Esc button when an inventory or container screen is open.
-    pub fn draw_esc(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
-        let (gw, gh) = (batch.width, batch.height);
-        let scale = batch.scale;
-        let mut ui = horizon_client::ui_theme::Ui::new(atlas, batch, (-1.0, -1.0));
-        let to_dp = scale / ui.density;
+    pub fn is_pressed(&self) -> bool {
+        self.finger.is_some()
+    }
+}
 
-        let plate = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.16 * a) as u8);
-        let pressed = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.38 * a) as u8);
-        let ink = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.85 * a) as u8);
+/// Action returned by clicking inside [`TouchSettingsOverlay`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchSettingsAction {
+    None,
+    Changed,
+    Close,
+}
 
-        let circle = |ui: &mut horizon_client::ui_theme::Ui, c: [f32; 2], r: f32, fill: u32| {
-            let cx = c[0] * to_dp;
-            let cy = c[1] * to_dp;
-            let cr = r * to_dp;
-            ui.rounded(cx - cr, cy - cr, 2.0 * cr, 2.0 * cr, cr, fill);
-        };
+#[derive(Clone, Copy)]
+enum SettingsBtn {
+    Scheme(usize),
+    LeftHanded,
+    DynamicJoystick,
+    SwapJumpSneak,
+    SprintJoystick,
+    ScaleDown,
+    ScaleUp,
+    SensDown,
+    SensUp,
+    OpacityDown,
+    OpacityUp,
+    Reset,
+    Done,
+}
 
-        let (center, radius) = self.esc_button(gw, gh);
-        let is_held = self.esc_finger.is_some();
-        let fill = if is_held { pressed(1.0) } else { plate(1.0) };
-        circle(&mut ui, center, radius, fill);
-        ui.finish();
+/// In-game Touch Settings panel (adapted from Starling's touch settings screen).
+#[derive(Default)]
+pub struct TouchSettingsOverlay {
+    buttons: Vec<([f32; 4], SettingsBtn)>,
+}
 
-        let label = "Esc";
-        let tw = HudBatch::text_width(atlas, label);
-        let tx = center[0] - tw * 0.5;
-        let ty = center[1] - 4.0;
-        batch.text(atlas, label, tx, ty, ink(1.0), true);
+impl TouchSettingsOverlay {
+    fn current_opacity(settings: &Settings) -> f32 {
+        let row = &settings.layouts[settings.mode.index()];
+        row.first().map_or(0.65, |p| p.opacity)
     }
 
-    pub fn handle_touch(&mut self, touch: &Touch, gui_scale: f32, gw: f32, gh: f32) -> Vec<TouchAction> {
-        let p = [
-            (touch.location.x as f32) / gui_scale.max(1.0),
-            (touch.location.y as f32) / gui_scale.max(1.0),
+    fn set_all_opacity(settings: &mut Settings, opacity: f32) {
+        let v = opacity.clamp(0.2, 1.0);
+        for row in &mut settings.layouts {
+            for p in row.iter_mut() {
+                p.opacity = v;
+            }
+        }
+    }
+
+    /// Draws the Touch Settings overlay in GUI pixels and updates hit rectangles.
+    pub fn draw(
+        &mut self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        settings: &Settings,
+        cursor: (f32, f32),
+    ) {
+        self.buttons.clear();
+        let (gw, gh) = (batch.width, batch.height);
+
+        // Backdrop scrim.
+        batch.fill(atlas, 0.0, 0.0, gw, gh, rgba(0, 0, 0, 165));
+
+        let panel_w = (gw - 24.0).clamp(240.0, 340.0);
+        let panel_h = (gh - 20.0).clamp(185.0, 232.0);
+        let px = ((gw - panel_w) * 0.5).floor();
+        let py = ((gh - panel_h) * 0.5).floor();
+
+        draw_panel(batch, atlas, px, py, panel_w, panel_h);
+
+        let title = "Touch Controls";
+        let tw = HudBatch::text_width(atlas, title);
+        batch.text(
+            atlas,
+            title,
+            px + (panel_w - tw) * 0.5,
+            py + 8.0,
+            rgba(255, 255, 255, 255),
+            true,
+        );
+
+        let pad = 10.0;
+        let inner_w = panel_w - pad * 2.0;
+        let mut y = py + 22.0;
+
+        // 1. Control Schemes (2x2 grid).
+        batch.text(atlas, "Control Scheme", px + pad, y, rgba(190, 195, 210, 255), true);
+        y += 11.0;
+        let gap = 4.0;
+        let col_w = (inner_w - gap) * 0.5;
+        let btn_h = 18.0;
+        for (idx, (mode, split, label)) in Mode::SCHEMES.iter().enumerate() {
+            let col = (idx % 2) as f32;
+            let row = (idx / 2) as f32;
+            let bx = px + pad + col * (col_w + gap);
+            let by = y + row * (btn_h + gap);
+            let active = settings.mode == *mode && settings.split_controls == *split;
+            let short = match idx {
+                0 => "Joystick + Crosshair",
+                1 => "Joystick + Tap",
+                2 => "D-Pad + Tap",
+                3 => "D-Pad + Crosshair",
+                _ => label,
+            };
+            let rect = [bx, by, col_w, btn_h];
+            draw_button(batch, atlas, rect, short, active, hit(rect, cursor));
+            self.buttons.push((rect, SettingsBtn::Scheme(idx)));
+        }
+        y += (btn_h + gap) * 2.0 + 4.0;
+
+        // 2. Toggles (2x2 grid).
+        let toggles = [
+            (
+                if settings.left_handed { "Left-Handed: ON" } else { "Left-Handed: OFF" },
+                settings.left_handed,
+                SettingsBtn::LeftHanded,
+            ),
+            (
+                if settings.dynamic_joystick { "Dynamic Stick: ON" } else { "Dynamic Stick: OFF" },
+                settings.dynamic_joystick,
+                SettingsBtn::DynamicJoystick,
+            ),
+            (
+                if settings.swap_jump_sneak { "Swap Jump/Sneak: ON" } else { "Swap Jump/Sneak: OFF" },
+                settings.swap_jump_sneak,
+                SettingsBtn::SwapJumpSneak,
+            ),
+            (
+                if settings.sprint_with_joystick { "Stick Sprint: ON" } else { "Stick Sprint: OFF" },
+                settings.sprint_with_joystick,
+                SettingsBtn::SprintJoystick,
+            ),
         ];
-        let u = gw.min(gh) / 9.0;
-        let mut out = Vec::new();
-
-        match touch.phase {
-            TouchPhase::Started => {
-                // 1. Virtual action buttons (Jump, Sneak, Pause, Chat, Bag)
-                for (btn, center, radius, _) in self.buttons(gw, gh) {
-                    let dx = p[0] - center[0];
-                    let dy = p[1] - center[1];
-                    if (dx * dx + dy * dy).sqrt() <= radius * 1.15 {
-                        self.fingers.push((touch.id, FingerRole::Button(btn)));
-                        if !self.held_buttons.contains(&btn) {
-                            self.held_buttons.push(btn);
-                            out.push(TouchAction::ButtonDown(btn));
-                        }
-                        return out;
-                    }
-                }
-
-                // 2. Hotbar slots (bottom center)
-                let hotbar_x = gw / 2.0 - 90.0;
-                let hotbar_y = gh - 22.0;
-                if p[1] >= hotbar_y && p[1] <= hotbar_y + 22.0 && p[0] >= hotbar_x && p[0] <= hotbar_x + 180.0 {
-                    let slot = (((p[0] - hotbar_x) / 20.0).floor() as usize).min(8);
-                    out.push(TouchAction::SelectSlot(slot));
-                    return out;
-                }
-
-                // 3. Floating movement stick (left 40% of screen)
-                if p[0] < gw * 0.40 && p[1] > gh * 0.30 {
-                    if !self.fingers.iter().any(|(_, r)| matches!(r, FingerRole::Stick { .. })) {
-                        self.fingers.push((
-                            touch.id,
-                            FingerRole::Stick {
-                                origin: p,
-                                current: p,
-                                sprinting: false,
-                            },
-                        ));
-                        return out;
-                    }
-                }
-
-                // 4. In-world touch: look or tap-to-use / hold-to-break
-                self.fingers.push((
-                    touch.id,
-                    FingerRole::Look {
-                        start: p,
-                        last: p,
-                        down: Instant::now(),
-                        dragged: false,
-                        attacking: false,
-                    },
-                ));
-            }
-            TouchPhase::Moved => {
-                let Some((_, role)) = self.fingers.iter_mut().find(|(f, _)| *f == touch.id) else {
-                    return out;
-                };
-                match role {
-                    FingerRole::Stick { origin, current, sprinting } => {
-                        *current = p;
-                        let r = 1.3 * u;
-                        let dx = p[0] - origin[0];
-                        let dy = p[1] - origin[1];
-                        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
-                        let k = len.min(r) / len;
-                        let stick = [dx * k / r, -dy * k / r];
-                        out.push(TouchAction::Stick(stick));
-                        let forward = stick[1] > stick[0].abs();
-                        let sprint = if *sprinting {
-                            forward && stick[1] > 0.5
-                        } else {
-                            forward && len > r * 1.15
-                        };
-                        if sprint != *sprinting {
-                            *sprinting = sprint;
-                            out.push(TouchAction::Sprint(sprint));
-                        }
-                    }
-                    FingerRole::Look { start, last, dragged, attacking, .. } => {
-                        let dist = ((p[0] - start[0]).powi(2) + (p[1] - start[1]).powi(2)).sqrt();
-                        if !*dragged && dist > u * 0.15 {
-                            *dragged = true;
-                            if *attacking {
-                                *attacking = false;
-                                out.push(TouchAction::AttackStop);
-                            }
-                        }
-                        if *dragged {
-                            let scale = 1200.0 / gh;
-                            let dx = (p[0] - last[0]) * scale;
-                            let dy = (p[1] - last[1]) * scale;
-                            out.push(TouchAction::Look(dx as f64, dy as f64));
-                        }
-                        *last = p;
-                    }
-                    FingerRole::Button(..) => {}
-                }
-            }
-            TouchPhase::Ended | TouchPhase::Cancelled => {
-                let Some(idx) = self.fingers.iter().position(|(f, _)| *f == touch.id) else {
-                    return out;
-                };
-                let (_, role) = self.fingers.remove(idx);
-                match role {
-                    FingerRole::Stick { sprinting, .. } => {
-                        out.push(TouchAction::Stick([0.0, 0.0]));
-                        if sprinting {
-                            out.push(TouchAction::Sprint(false));
-                        }
-                    }
-                    FingerRole::Button(btn) => {
-                        self.held_buttons.retain(|b| *b != btn);
-                        out.push(TouchAction::ButtonUp(btn));
-                    }
-                    FingerRole::Look { down, dragged, attacking, last, .. } => {
-                        if attacking {
-                            out.push(TouchAction::AttackStop);
-                        } else if touch.phase == TouchPhase::Ended && !dragged && down.elapsed() < HOLD {
-                            out.push(TouchAction::Use(last));
-                        }
-                    }
-                }
-            }
+        for (idx, (label, active, kind)) in toggles.into_iter().enumerate() {
+            let col = (idx % 2) as f32;
+            let row = (idx / 2) as f32;
+            let bx = px + pad + col * (col_w + gap);
+            let by = y + row * (btn_h + gap);
+            let rect = [bx, by, col_w, btn_h];
+            draw_button(batch, atlas, rect, label, active, hit(rect, cursor));
+            self.buttons.push((rect, kind));
         }
-        out
-    }
+        y += (btn_h + gap) * 2.0 + 4.0;
 
-    /// Evaluates continuous hold state (breaks block after HOLD duration).
-    pub fn frame(&mut self, now: Instant) -> Vec<TouchAction> {
-        let mut out = Vec::new();
-        for (_, role) in &mut self.fingers {
-            if let FingerRole::Look { down, dragged: false, attacking, .. } = role {
-                if !*attacking && now.duration_since(*down) >= HOLD {
-                    *attacking = true;
-                    out.push(TouchAction::AttackStart);
-                }
-            }
+        // 3. Steppers: Scale, Sensitivity, Opacity.
+        let steppers = [
+            (
+                format!("Button Size: {}%", (settings.button_scale * 100.0).round() as i32),
+                SettingsBtn::ScaleDown,
+                SettingsBtn::ScaleUp,
+            ),
+            (
+                format!("Sensitivity: {}%", (settings.sensitivity * 100.0).round() as i32),
+                SettingsBtn::SensDown,
+                SettingsBtn::SensUp,
+            ),
+            (
+                format!(
+                    "Opacity: {}%",
+                    (Self::current_opacity(settings) * 100.0).round() as i32
+                ),
+                SettingsBtn::OpacityDown,
+                SettingsBtn::OpacityUp,
+            ),
+        ];
+        let step_h = 16.0;
+        let step_w = 24.0;
+        for (label, down_btn, up_btn) in steppers {
+            batch.text(atlas, &label, px + pad, y + 4.0, rgba(235, 235, 240, 255), true);
+            let minus = [px + panel_w - pad - step_w * 2.0 - 4.0, y, step_w, step_h];
+            let plus = [px + panel_w - pad - step_w, y, step_w, step_h];
+            draw_button(batch, atlas, minus, "-", false, hit(minus, cursor));
+            draw_button(batch, atlas, plus, "+", false, hit(plus, cursor));
+            self.buttons.push((minus, down_btn));
+            self.buttons.push((plus, up_btn));
+            y += step_h + 3.0;
         }
-        out
+
+        // 4. Footer: Reset & Done.
+        let foot_y = (py + panel_h - 26.0).max(y + 2.0);
+        let reset_rect = [px + pad, foot_y, col_w, 18.0];
+        let done_rect = [px + pad + col_w + gap, foot_y, col_w, 18.0];
+        draw_button(batch, atlas, reset_rect, "Reset Defaults", false, hit(reset_rect, cursor));
+        draw_button(batch, atlas, done_rect, "Done", true, hit(done_rect, cursor));
+        self.buttons.push((reset_rect, SettingsBtn::Reset));
+        self.buttons.push((done_rect, SettingsBtn::Done));
     }
 
-    pub fn active_stick(&self) -> Option<([f32; 2], [f32; 2])> {
-        self.fingers.iter().find_map(|(_, r)| match r {
-            FingerRole::Stick { origin, current, .. } => Some((*origin, *current)),
-            _ => None,
-        })
-    }
-
-    /// Where a touch finger points while it may tap or while it holds to break.
-    pub fn aim(&self) -> Option<[f32; 2]> {
-        self.fingers.iter().rev().find_map(|(_, role)| match role {
-            FingerRole::Look {
-                last,
-                dragged,
-                attacking,
-                ..
-            } if !*dragged || *attacking => Some(*last),
-            _ => None,
-        })
-    }
-
-    pub fn holding(&self) -> bool {
-        self.fingers.iter().any(|(_, role)| match role {
-            FingerRole::Look { attacking, .. } => *attacking,
-            _ => false,
-        })
-    }
-
-    /// Renders Starling's clean translucent Bedrock-style touch controls.
-    pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas, mining_progress: f32) {
-        let (gw, gh) = (batch.width, batch.height);
-        let scale = batch.scale;
-        let u = gw.min(gh) / 9.0;
-        let mut ui = horizon_client::ui_theme::Ui::new(atlas, batch, (-1.0, -1.0));
-        let to_dp = scale / ui.density;
-
-        let plate = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.16 * a) as u8);
-        let pressed = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.38 * a) as u8);
-        let ink = |a: f32| horizon_client::hud::rgba(255, 255, 255, (255.0 * 0.85 * a) as u8);
-
-        let circle = |ui: &mut horizon_client::ui_theme::Ui, c: [f32; 2], r: f32, fill: u32| {
-            let cx = c[0] * to_dp;
-            let cy = c[1] * to_dp;
-            let cr = r * to_dp;
-            ui.rounded(
-                cx - cr,
-                cy - cr,
-                2.0 * cr,
-                2.0 * cr,
-                cr,
-                fill,
-            );
+    /// Handles a click in GUI coordinates `(x, y)`.
+    pub fn click(&self, x: f32, y: f32, settings: &mut Settings) -> TouchSettingsAction {
+        let Some((_, btn)) = self.buttons.iter().find(|(r, _)| hit(*r, (x, y))) else {
+            return TouchSettingsAction::None;
         };
-        let ring = |ui: &mut horizon_client::ui_theme::Ui, c: [f32; 2], r: f32, color: u32| {
-            let cx = c[0] * to_dp;
-            let cy = c[1] * to_dp;
-            let cr = r * to_dp;
-            ui.border(
-                cx - cr,
-                cy - cr,
-                2.0 * cr,
-                2.0 * cr,
-                cr,
-                color,
-            );
-        };
-
-        // 1. Movement stick
-        let stick_home = [0.12 * gw, 0.733 * gh];
-        let stick_radius = 1.3 * u;
-        if let Some((origin, current)) = self.active_stick() {
-            circle(&mut ui, origin, stick_radius, plate(0.7));
-            let dx = current[0] - origin[0];
-            let dy = current[1] - origin[1];
-            let len = (dx * dx + dy * dy).sqrt().max(1e-6);
-            let k = len.min(stick_radius) / len;
-            let knob = [origin[0] + dx * k, origin[1] + dy * k];
-            circle(&mut ui, knob, stick_radius * 0.45, pressed(0.9));
-        } else {
-            circle(&mut ui, stick_home, stick_radius, plate(0.35));
-            circle(&mut ui, stick_home, stick_radius * 0.45, plate(0.45));
-        }
-
-        // 2. Action buttons
-        for (btn, center, radius, _) in self.buttons(gw, gh) {
-            let is_held = self.held_buttons.contains(&btn);
-            let fill = if is_held { pressed(1.0) } else { plate(1.0) };
-            circle(&mut ui, center, radius, fill);
-        }
-
-        // 3. Touch aim & breaking circle (Bedrock / Starling)
-        if let Some(p) = self.aim() {
-            let radius = 18.0;
-            ring(&mut ui, p, radius + 1.0, horizon_client::hud::rgba(0, 0, 0, 120));
-            ring(&mut ui, p, radius, horizon_client::hud::rgba(255, 255, 255, 210));
-            if self.holding() && mining_progress > 0.0 {
-                let inner = (radius - 2.0).max(0.0) * mining_progress.clamp(0.0, 1.0);
-                if inner > 0.0 {
-                    circle(&mut ui, p, inner, horizon_client::hud::rgba(255, 255, 255, 80));
-                    ring(&mut ui, p, inner, horizon_client::hud::rgba(255, 255, 255, 230));
+        match *btn {
+            SettingsBtn::Scheme(idx) => {
+                if let Some((mode, split, _)) = Mode::SCHEMES.get(idx) {
+                    settings.mode = *mode;
+                    settings.split_controls = *split;
+                    settings.sanitize();
                 }
+                TouchSettingsAction::Changed
             }
+            SettingsBtn::LeftHanded => {
+                settings.left_handed = !settings.left_handed;
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::DynamicJoystick => {
+                settings.dynamic_joystick = !settings.dynamic_joystick;
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::SwapJumpSneak => {
+                settings.swap_jump_sneak = !settings.swap_jump_sneak;
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::SprintJoystick => {
+                settings.sprint_with_joystick = !settings.sprint_with_joystick;
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::ScaleDown => {
+                settings.button_scale = (settings.button_scale - 0.1).clamp(0.5, 2.0);
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::ScaleUp => {
+                settings.button_scale = (settings.button_scale + 0.1).clamp(0.5, 2.0);
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::SensDown => {
+                settings.sensitivity = (settings.sensitivity - 0.1).clamp(0.2, 3.0);
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::SensUp => {
+                settings.sensitivity = (settings.sensitivity + 0.1).clamp(0.2, 3.0);
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::OpacityDown => {
+                let cur = Self::current_opacity(settings);
+                Self::set_all_opacity(settings, cur - 0.1);
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::OpacityUp => {
+                let cur = Self::current_opacity(settings);
+                Self::set_all_opacity(settings, cur + 0.1);
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::Reset => {
+                *settings = default_touch_settings();
+                TouchSettingsAction::Changed
+            }
+            SettingsBtn::Done => TouchSettingsAction::Close,
         }
+    }
+}
 
-        ui.finish();
+fn hit([x, y, w, h]: [f32; 4], (cx, cy): (f32, f32)) -> bool {
+    cx >= x && cx <= x + w && cy >= y && cy <= y + h
+}
 
-        // 4. Centered button labels
-        for (_, center, _, label) in self.buttons(gw, gh) {
-            let tw = HudBatch::text_width(atlas, label);
-            let tx = center[0] - tw * 0.5;
-            let ty = center[1] - 4.0;
-            batch.text(atlas, label, tx, ty, ink(1.0), true);
-        }
+fn draw_panel(b: &mut HudBatch, a: &HudAtlas, x: f32, y: f32, w: f32, h: f32) {
+    b.fill(a, x, y, w, h, rgba(16, 18, 24, 240));
+    let border = rgba(120, 130, 150, 230);
+    b.fill(a, x, y, w, 1.0, border);
+    b.fill(a, x, y + h - 1.0, w, 1.0, border);
+    b.fill(a, x, y, 1.0, h, border);
+    b.fill(a, x + w - 1.0, y, 1.0, h, border);
+}
+
+fn draw_button(
+    b: &mut HudBatch,
+    a: &HudAtlas,
+    [x, y, w, h]: [f32; 4],
+    label: &str,
+    active: bool,
+    hovered: bool,
+) {
+    let bg = if active {
+        rgba(64, 128, 84, 240)
+    } else if hovered {
+        rgba(84, 92, 112, 235)
+    } else {
+        rgba(52, 56, 68, 230)
+    };
+    let hi = if active {
+        rgba(128, 210, 148, 235)
+    } else {
+        rgba(140, 146, 162, 200)
+    };
+    let lo = rgba(20, 22, 28, 240);
+    b.fill(a, x, y, w, h, lo);
+    b.fill(a, x + 1.0, y + 1.0, (w - 2.0).max(1.0), (h - 2.0).max(1.0), bg);
+    b.fill(a, x + 1.0, y + 1.0, (w - 2.0).max(1.0), 1.0, hi);
+    b.fill(a, x + 1.0, y + 1.0, 1.0, (h - 2.0).max(1.0), hi);
+
+    let tw = HudBatch::text_width(a, label);
+    let start = b.vertices.len();
+    let cx = x + w * 0.5;
+    let cy = y + h * 0.5;
+    b.text(a, label, cx - tw * 0.5, cy - 4.0, rgba(248, 248, 252, 255), true);
+    let scale = ((w - 6.0).max(1.0) / tw.max(1.0)).min(1.0);
+    if scale < 1.0 {
+        b.scale_since(start, cx, cy, scale, scale);
     }
 }
 
@@ -572,7 +539,7 @@ impl TouchControls {
 mod tests {
     use super::*;
 
-    fn make_touch(id: u64, phase: TouchPhase, x: f64, y: f64) -> Touch {
+    fn mk_touch(id: u64, phase: TouchPhase, x: f64, y: f64) -> Touch {
         Touch {
             device_id: DeviceId::dummy(),
             phase,
@@ -584,200 +551,69 @@ mod tests {
 
     #[test]
     fn touch_pointer_tap_produces_click() {
-        let mut pointer = TouchPointer::default();
-        let t_start = make_touch(1, TouchPhase::Started, 100.0, 100.0);
-        let events = pointer.event(&t_start, SLOP_PX);
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], WindowEvent::CursorMoved { .. }));
-
-        let t_end = make_touch(1, TouchPhase::Ended, 100.0, 100.0);
-        let events = pointer.event(&t_end, SLOP_PX);
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], WindowEvent::CursorMoved { .. }));
-        assert!(matches!(events[1], WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }));
-        assert!(matches!(events[2], WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. }));
+        let mut ptr = TouchPointer::default();
+        let evs1 = ptr.event(&mk_touch(1, TouchPhase::Started, 100.0, 100.0), SLOP_PX);
+        assert!(matches!(evs1.as_slice(), [WindowEvent::CursorMoved { .. }]));
+        let evs2 = ptr.event(&mk_touch(1, TouchPhase::Ended, 102.0, 101.0), SLOP_PX);
+        assert_eq!(evs2.len(), 3);
+        assert!(matches!(
+            evs2[1],
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ));
+        assert!(matches!(
+            evs2[2],
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn touch_pointer_vertical_drag_produces_wheel() {
-        let mut pointer = TouchPointer::default();
-        pointer.event(&make_touch(1, TouchPhase::Started, 100.0, 100.0), SLOP_PX);
-        let events = pointer.event(&make_touch(1, TouchPhase::Moved, 100.0, 130.0), SLOP_PX);
-        assert!(!events.is_empty());
-        assert!(matches!(events[0], WindowEvent::MouseWheel { .. }));
+        let mut ptr = TouchPointer::default();
+        let _ = ptr.event(&mk_touch(1, TouchPhase::Started, 100.0, 100.0), SLOP_PX);
+        let evs = ptr.event(&mk_touch(1, TouchPhase::Moved, 100.0, 130.0), SLOP_PX);
+        assert!(matches!(evs.as_slice(), [WindowEvent::MouseWheel { .. }]));
     }
 
     #[test]
-    fn touch_controls_stick_moves_and_centres() {
-        let mut controls = TouchControls::default();
-        let (gw, gh) = (640.0, 360.0);
-        // Touch on left side
-        let actions = controls.handle_touch(&make_touch(1, TouchPhase::Started, 50.0, 200.0), 1.0, gw, gh);
-        assert!(actions.is_empty());
-        assert!(controls.active_stick().is_some());
-
-        // Move forward
-        let actions = controls.handle_touch(&make_touch(1, TouchPhase::Moved, 50.0, 160.0), 1.0, gw, gh);
-        assert_eq!(actions.len(), 1);
-        match actions[0] {
-            TouchAction::Stick([sx, sy]) => {
-                assert_eq!(sx, 0.0);
-                assert!(sy > 0.5);
-            }
-            _ => panic!("Expected TouchAction::Stick"),
-        }
-
-        // Release stick
-        let actions = controls.handle_touch(&make_touch(1, TouchPhase::Ended, 50.0, 160.0), 1.0, gw, gh);
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], TouchAction::Stick([0.0, 0.0])));
-    }
-
-    #[test]
-    fn touch_controls_button_press_and_release() {
-        let mut controls = TouchControls::default();
-        let (gw, gh) = (640.0, 360.0);
-        let buttons = controls.buttons(gw, gh);
-        let (_, center, radius, _) = buttons.iter().find(|(b, ..)| *b == TouchButton::Jump).unwrap();
-
-        // Tap inside Jump circle
-        let tap_x = center[0] + radius * 0.5;
-        let tap_y = center[1] + radius * 0.5;
-        let actions = controls.handle_touch(&make_touch(2, TouchPhase::Started, tap_x as f64, tap_y as f64), 1.0, gw, gh);
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], TouchAction::ButtonDown(TouchButton::Jump)));
-
-        let actions = controls.handle_touch(&make_touch(2, TouchPhase::Ended, tap_x as f64, tap_y as f64), 1.0, gw, gh);
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], TouchAction::ButtonUp(TouchButton::Jump)));
-    }
-
-    #[test]
-    fn touch_controls_tap_produces_use() {
-        let mut controls = TouchControls::default();
-        let (gw, gh) = (640.0, 360.0);
-        // Tap in right side of screen (world area)
-        let _ = controls.handle_touch(&make_touch(4, TouchPhase::Started, 400.0, 200.0), 1.0, gw, gh);
-        let actions = controls.handle_touch(&make_touch(4, TouchPhase::Ended, 400.0, 200.0), 1.0, gw, gh);
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], TouchAction::Use(_)));
-    }
-
-    #[test]
-    fn touch_controls_drag_produces_look() {
-        let mut controls = TouchControls::default();
-        let (gw, gh) = (640.0, 360.0);
-        let _ = controls.handle_touch(&make_touch(5, TouchPhase::Started, 400.0, 200.0), 1.0, gw, gh);
-        // Drag horizontally
-        let actions = controls.handle_touch(&make_touch(5, TouchPhase::Moved, 430.0, 200.0), 1.0, gw, gh);
-        assert_eq!(actions.len(), 1);
-        match actions[0] {
-            TouchAction::Look(dx, dy) => {
-                assert!(dx > 0.0);
-                assert_eq!(dy, 0.0);
-            }
-            _ => panic!("Expected TouchAction::Look"),
-        }
-    }
-
-    #[test]
-    fn touch_controls_hold_produces_attack() {
-        let mut controls = TouchControls::default();
-        let (gw, gh) = (640.0, 360.0);
-        let _ = controls.handle_touch(&make_touch(6, TouchPhase::Started, 400.0, 200.0), 1.0, gw, gh);
-        // Before HOLD: no attack
-        let actions = controls.frame(Instant::now());
-        assert!(actions.is_empty());
-
-        // After HOLD (350ms): attack starts
-        let actions = controls.frame(Instant::now() + Duration::from_millis(350));
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], TouchAction::AttackStart));
-
-        // Lift finger: attack stops
-        let actions = controls.handle_touch(&make_touch(6, TouchPhase::Ended, 400.0, 200.0), 1.0, gw, gh);
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], TouchAction::AttackStop));
-    }
-
-    #[test]
-    fn touch_controls_draw_scales_circles_to_gui_bounds() {
-        let atlas = HudAtlas::boot();
-        let mut batch = HudBatch::new(
-            [1920, 1080],
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
+    fn esc_button_triggers_on_release_inside_rect() {
+        let mut esc = EscButtonState::default();
+        let rect = [0.45, 0.0, 0.1, 0.12];
+        assert_eq!(
+            esc.handle(&mk_touch(1, TouchPhase::Started, 500.0, 50.0), 1000.0, 1000.0, rect),
+            (true, false)
         );
-        let controls = TouchControls::default();
-        controls.draw(&mut batch, &atlas, 0.0);
-
-        let (gw, gh) = (batch.width, batch.height);
-        let max_x = batch.vertices.iter().map(|v| v.pos[0]).fold(0.0f32, f32::max);
-        let max_y = batch.vertices.iter().map(|v| v.pos[1]).fold(0.0f32, f32::max);
-        assert!(max_x > 0.85 * gw, "circles must scale to full GUI bounds: max_x={max_x}, gw={gw}");
-        assert!(max_y > 0.70 * gh, "circles must scale to full GUI bounds: max_y={max_y}, gh={gh}");
+        assert!(esc.is_pressed());
+        assert_eq!(
+            esc.handle(&mk_touch(1, TouchPhase::Ended, 500.0, 50.0), 1000.0, 1000.0, rect),
+            (true, true)
+        );
+        assert!(!esc.is_pressed());
     }
 
     #[test]
-    fn touch_controls_handle_esc_touch_and_draw_esc() {
-        let mut controls = TouchControls::default();
-        let (gw, gh) = (640.0, 360.0);
-        let (esc_center, _) = controls.esc_button(gw, gh);
-
-        // 1. Touch outside Esc
-        let (consumed, triggered) = controls.handle_esc_touch(
-            &make_touch(10, TouchPhase::Started, 100.0, 100.0),
-            1.0,
-            gw,
-            gh,
-        );
-        assert!(!consumed);
-        assert!(!triggered);
-
-        // 2. Touch on Esc button
-        let (consumed, triggered) = controls.handle_esc_touch(
-            &make_touch(11, TouchPhase::Started, esc_center[0] as f64, esc_center[1] as f64),
-            1.0,
-            gw,
-            gh,
-        );
-        assert!(consumed);
-        assert!(!triggered);
-        assert_eq!(controls.esc_finger, Some(11));
-
-        // 3. Move finger
-        let (consumed, triggered) = controls.handle_esc_touch(
-            &make_touch(11, TouchPhase::Moved, esc_center[0] as f64 + 1.0, esc_center[1] as f64 + 1.0),
-            1.0,
-            gw,
-            gh,
-        );
-        assert!(consumed);
-        assert!(!triggered);
-
-        // 4. Release finger on Esc -> triggers
-        let (consumed, triggered) = controls.handle_esc_touch(
-            &make_touch(11, TouchPhase::Ended, esc_center[0] as f64, esc_center[1] as f64),
-            1.0,
-            gw,
-            gh,
-        );
-        assert!(consumed);
-        assert!(triggered);
-        assert_eq!(controls.esc_finger, None);
-
-        // 5. Test draw_esc
-        let atlas = HudAtlas::boot();
-        let mut batch = HudBatch::new(
-            [1280, 720],
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        );
-        controls.draw_esc(&mut batch, &atlas);
-        assert!(!batch.vertices.is_empty());
+    fn touch_settings_overlay_switches_scheme() {
+        let mut settings = default_touch_settings();
+        let mut overlay = TouchSettingsOverlay::default();
+        let atlas = HudAtlas::default();
+        let mut batch = HudBatch::new([1280, 720], Default::default());
+        overlay.draw(&mut batch, &atlas, &settings, (-1.0, -1.0));
+        let (rect, _) = overlay
+            .buttons
+            .iter()
+            .find(|(_, b)| matches!(b, SettingsBtn::Scheme(3)))
+            .copied()
+            .expect("D-Pad + Crosshair scheme button exists");
+        let res = overlay.click(rect[0] + 4.0, rect[1] + 4.0, &mut settings);
+        assert_eq!(res, TouchSettingsAction::Changed);
+        assert_eq!(settings.mode, Mode::Dpad);
+        assert!(settings.split_controls);
     }
 }

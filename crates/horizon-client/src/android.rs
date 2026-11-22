@@ -146,6 +146,47 @@ pub fn finish_and_exit() -> ! {
     unsafe { libc::_exit(0) }
 }
 
+/// Open a URL in the system browser via Android `Intent.ACTION_VIEW`.
+pub fn open_url(url: &str) {
+    with_activity(|env, activity| {
+        let action = env.new_string("android.intent.action.VIEW")?;
+        let uri_str = env.new_string(url)?;
+        let uri_cls = env.find_class("android/net/Uri")?;
+        let uri = env
+            .call_static_method(
+                uri_cls,
+                "parse",
+                "(Ljava/lang/String;)Landroid/net/Uri;",
+                &[(&uri_str).into()],
+            )?
+            .l()?;
+        let intent_cls = env.find_class("android/content/Intent")?;
+        let intent = env.new_object(
+            intent_cls,
+            "(Ljava/lang/String;Landroid/net/Uri;)V",
+            &[(&action).into(), (&uri).into()],
+        )?;
+        let _ = env.call_method(
+            activity,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[(&intent).into()],
+        );
+        Ok(())
+    });
+}
+
+/// Show or hide the Android soft keyboard.
+pub fn show_keyboard(show: bool) {
+    if let Some(app) = APP.get() {
+        if show {
+            app.show_soft_input(true);
+        } else {
+            app.hide_soft_input(true);
+        }
+    }
+}
+
 unsafe extern "C" {
     fn __android_log_write(
         priority: std::ffi::c_int,

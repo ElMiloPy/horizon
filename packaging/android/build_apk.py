@@ -168,17 +168,56 @@ def parse_epk(raw_b64):
     return entries
 
 
+def ensure_starling_touch_icons(src):
+    """Fetch verified Starling/Bedrock touch control icon PNGs into .local (gitignored)
+    so they are bundled inside LZMA-compressed resources.hpk (~25 KB compressed)."""
+    import hashlib
+    import json
+    import urllib.request
+
+    manifest_path = HERE / "bedrock-controls.json"
+    if not manifest_path.is_file():
+        return False
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rev = manifest["revision"]
+    target_root = src / "assets" / "minecraft" / "textures" / "gui" / "bedrock"
+    downloaded = 0
+    for entry in manifest["files"]:
+        rel = entry["path"]
+        expected_sha = entry["sha256"]
+        dest = target_root / rel
+        if dest.is_file() and hashlib.sha256(dest.read_bytes()).hexdigest() == expected_sha:
+            continue
+        source = "LICENSE.md" if rel == "LICENSE.md" else f"resource_pack/textures/{entry['source']}"
+        url = f"https://raw.githubusercontent.com/Mojang/bedrock-samples/{rev}/{source}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = resp.read()
+        actual_sha = hashlib.sha256(data).hexdigest()
+        if actual_sha != expected_sha:
+            sys.exit(f"build_apk: touch icon checksum mismatch for {rel}")
+        dest.write_bytes(data)
+        downloaded += 1
+    if downloaded:
+        print(f"+ fetched {downloaded} Starling/Bedrock touch control icon assets", flush=True)
+    return True
+
+
 def prepare_bundled_resources(out, force=False):
     """Bundle all game assets, sounds, and engine data into solid LZMA assets/resources.hpk.
     Uses official Mojang 26.3 textures, models, blockstates, and matching panoramas, combined
-    with an optimized sound footprint and solid LZMA compression to massively beat the HTML version's size."""
+    with an optimized sound footprint, Starling touch icons, and solid LZMA compression."""
     import re, lzma, struct, io
+
+    src = ROOT / ".local" / "horizon-client" / "26.3"
+    ensure_starling_touch_icons(src)
 
     assets_dir = out / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     res_hpk = assets_dir / "resources.hpk"
+    stamp = assets_dir / ".touch_icons_v1"
 
-    if not force and res_hpk.is_file() and res_hpk.stat().st_size > 20 * 1024 * 1024:
+    if not force and res_hpk.is_file() and stamp.is_file() and res_hpk.stat().st_size > 20 * 1024 * 1024:
         print(f"+ using existing resources.hpk ({res_hpk.stat().st_size / (1024*1024):.2f} MB)", flush=True)
         return res_hpk
 
@@ -242,6 +281,7 @@ def prepare_bundled_resources(out, force=False):
     hpk_buf.write(comp_sounds)
 
     res_hpk.write_bytes(hpk_buf.getvalue())
+    stamp.write_text("ok\n", encoding="utf-8")
     sz = res_hpk.stat().st_size
     print(f"+ created resources.hpk ({sz / (1024*1024):.2f} MB, {len(written)} files)", flush=True)
     return res_hpk

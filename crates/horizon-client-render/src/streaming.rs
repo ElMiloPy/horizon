@@ -367,7 +367,11 @@ struct MeshPool {
     bytes: usize,
 }
 impl MeshPool {
-    const BYTES: usize = 16 << 20;
+    const BYTES: usize = if cfg!(target_os = "android") {
+        8 << 20
+    } else {
+        16 << 20
+    };
     const COUNT: usize = 128;
     fn take(&mut self) -> SectionMesh {
         let mesh = self.meshes.pop().unwrap_or_default();

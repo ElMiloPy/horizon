@@ -929,20 +929,45 @@ pub fn offline_cape() -> Option<&'static [u8]> {
     .as_deref()
 }
 
-/// The skin the launcher gives an offline name (`HORIZON_OFFLINE_SKIN`, a
-/// PNG's path, and `HORIZON_OFFLINE_SKIN_MODEL`, `classic` or `slim`;
-/// launcher/src/skins.rs): its 64x64 RGBA as `process_legacy_skin` lays it
-/// out, and whether it is slim. Read once.
-pub fn offline_skin() -> Option<&'static (Vec<u8>, bool)> {
-    static SKIN: std::sync::OnceLock<Option<(Vec<u8>, bool)>> = std::sync::OnceLock::new();
+static OFFLINE_SKIN_OVERRIDE: std::sync::RwLock<Option<Option<std::sync::Arc<(Vec<u8>, bool)>>>> =
+    std::sync::RwLock::new(None);
+static OFFLINE_SKIN_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Sets or clears the live offline skin override (64x64 RGBA + slim flag) from the
+/// in-game skin picker. Pass `None` to revert to the default Steve/Alex skin.
+pub fn set_offline_skin(skin: Option<(Vec<u8>, bool)>) {
+    if let Ok(mut guard) = OFFLINE_SKIN_OVERRIDE.write() {
+        *guard = Some(skin.map(std::sync::Arc::new));
+        OFFLINE_SKIN_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Monotonic counter incremented whenever [`set_offline_skin`] changes the skin, so
+/// the renderer knows when to re-upload the `"horizon/offline_skin"` atlas slot.
+pub fn offline_skin_generation() -> u64 {
+    OFFLINE_SKIN_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The skin the launcher or in-game skin picker gives an offline name: its 64x64
+/// RGBA as `process_legacy_skin` lays it out, and whether it is slim.
+pub fn offline_skin() -> Option<std::sync::Arc<(Vec<u8>, bool)>> {
+    if let Ok(guard) = OFFLINE_SKIN_OVERRIDE.read()
+        && let Some(override_skin) = &*guard
+    {
+        return override_skin.clone();
+    }
+    static SKIN: std::sync::OnceLock<Option<std::sync::Arc<(Vec<u8>, bool)>>> =
+        std::sync::OnceLock::new();
     SKIN.get_or_init(|| {
         let path = std::env::var_os("HORIZON_OFFLINE_SKIN").filter(|p| !p.is_empty())?;
         let model = std::env::var("HORIZON_OFFLINE_SKIN_MODEL").unwrap_or_default();
         read_offline_skin(std::path::Path::new(&path), &model)
             .inspect_err(|e| eprintln!("Horizon: no offline skin ({}): {e}", path.display()))
             .ok()
+            .map(std::sync::Arc::new)
     })
-    .as_ref()
+    .clone()
 }
 fn read_offline_skin(path: &std::path::Path, model: &str) -> Result<(Vec<u8>, bool), String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;

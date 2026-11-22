@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 path = "../horizon-client/src/android_lib.rs"
 
 [target.'cfg(target_os = "android")'.dependencies]
-horizon-client = { path = "../horizon-client", default-features = false }
+horizon-client = { path = "../horizon-client", default-features = false, features = ["system-allocator"] }
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 log = "0.4"
 libc = "0.2"

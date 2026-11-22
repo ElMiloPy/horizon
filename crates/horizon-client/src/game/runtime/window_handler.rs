@@ -15,11 +15,14 @@ impl Game<'_> {
             && self.title.is_none()
             && self.player.is_some()
             && !self.screen_over_playing()
+            && !self.touch_settings_open
+            && !self.accounts_ui.is_open()
     }
 
     pub(super) fn touch_screen_shows_esc(&self) -> bool {
         self.player.is_some()
             && self.title.is_none()
+            && !self.touch_settings_open
             && (matches!(
                 self.screen,
                 Screen::Inventory
@@ -31,24 +34,27 @@ impl Game<'_> {
     }
 
     pub(super) fn touch_hits_entity(&self) -> bool {
-        if let Some((_, distance, _)) = self.mob_hit() {
-            if self.before_block(distance) && self.held_range_allows(distance) {
-                return true;
-            }
+        if let Some((_, distance, _)) = self.mob_hit()
+            && self.before_block(distance)
+            && self.held_range_allows(distance)
+        {
+            return true;
         }
-        if let Some(hit) = self.remote_object_hit(true) {
-            if self.before_block(hit.distance) && self.held_range_allows(hit.distance) {
-                return true;
-            }
+        if let Some(hit) = self.remote_object_hit(true)
+            && self.before_block(hit.distance)
+            && self.held_range_allows(hit.distance)
+        {
+            return true;
         }
         false
     }
 
+    /// Normalized `[0..1, 0..1]` aim point for tap-to-interact touch schemes; `None` in crosshair modes.
     pub(super) fn touch_aim_point(&self) -> Option<[f32; 2]> {
-        if !self.touch_active || !self.touch_playing() {
+        if !self.touch_active || !self.touch_playing() || self.touch_controls.crosshair() {
             return None;
         }
-        self.touch_controls.aim().or_else(|| {
+        self.touch_controls.aim.or_else(|| {
             self.touch_tapped
                 .filter(|(until, _)| Instant::now() < *until)
                 .map(|(_, p)| p)
@@ -58,23 +64,17 @@ impl Game<'_> {
     pub(super) fn touch_aim_dir(&self) -> Option<[f64; 3]> {
         let p = self.touch_aim_point()?;
         let fov = self.locator_camera?.3;
-        let (gw, gh) = self.renderer.as_ref().map_or((640.0, 360.0), |r| {
-            let b = horizon_client::hud::HudBatch::new(
-                [r.config.width, r.config.height],
-                self.settings.gui_scale_inputs(),
-            );
-            (b.width, b.height)
-        });
-        let (sx, sy) = (
-            2.0 * f64::from(p[0]) / f64::from(gw) - 1.0,
-            1.0 - 2.0 * f64::from(p[1]) / f64::from(gh),
-        );
+        let (w, h) = self
+            .renderer
+            .as_ref()
+            .map_or((1280.0, 720.0), |r| (r.config.width.max(1) as f64, r.config.height.max(1) as f64));
+        let (sx, sy) = (2.0 * f64::from(p[0]) - 1.0, 1.0 - 2.0 * f64::from(p[1]));
         let t = (f64::from(fov).to_radians() / 2.0).tan();
         let forward = glam::DVec3::from_array(view_vector(self.yaw, self.pitch));
         let yaw = f64::from(self.yaw).to_radians();
         let right = glam::DVec3::new(-yaw.cos(), 0.0, -yaw.sin());
         let up = right.cross(forward);
-        let dir = forward + right * (sx * t * f64::from(gw) / f64::from(gh)) + up * (sy * t);
+        let dir = forward + right * (sx * t * w / h) + up * (sy * t);
         Some(dir.normalize().to_array())
     }
 
@@ -143,69 +143,95 @@ impl Game<'_> {
         }
     }
 
-    pub(super) fn apply_touch_action(&mut self, action: crate::touch::TouchAction) {
-        match action {
-            crate::touch::TouchAction::Stick(stick) => {
-                self.pad.injected.left = stick;
-            }
-            crate::touch::TouchAction::Sprint(sprint) => {
-                self.pad.injected.set(horizon_client::gamepad::Button::LeftStick, sprint);
-            }
-            crate::touch::TouchAction::Look(dx, dy) => {
-                self.mouse.add_motion(dx, dy);
-                self.last_input = Instant::now();
-            }
-            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Jump) => {
-                self.pad.injected.set(horizon_client::gamepad::Button::South, true);
-            }
-            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Jump) => {
-                self.pad.injected.set(horizon_client::gamepad::Button::South, false);
-            }
-            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Sneak) => {
-                self.pad.injected.set(horizon_client::gamepad::Button::East, true);
-            }
-            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Sneak) => {
-                self.pad.injected.set(horizon_client::gamepad::Button::East, false);
-            }
-            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Pause) => {
-                let _ = self.key_pressed(winit::keyboard::KeyCode::Escape, winit::keyboard::KeyCode::Escape);
-            }
-            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Chat) => {
-                let _ = self.key_pressed(winit::keyboard::KeyCode::KeyT, winit::keyboard::KeyCode::KeyT);
-            }
-            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Inventory) => {
-                let _ = self.key_pressed(winit::keyboard::KeyCode::KeyE, winit::keyboard::KeyCode::KeyE);
-            }
-            crate::touch::TouchAction::AttackStart => {
-                self.left = true;
+    /// Polls Starling's `TouchControls` once per frame while playing, syncing contextual
+    /// player state, feeding `pad.injected`, and handling short world taps (tap-to-attack mobs
+    /// vs use/place) and shortcut buttons (Chat, Settings, F3, F5, Swap Offhand).
+    pub(super) fn touch_frame(&mut self) {
+        let projectile_crosshair = self
+            .stack_in(self.selected)
+            .is_some_and(|s| horizon_client_render::touch::projectile_crosshair(&s.item));
+        let main_shield = self
+            .stack_in(self.selected)
+            .is_some_and(|s| &*s.item == "minecraft:shield");
+        let off_shield = self
+            .offhand
+            .as_ref()
+            .is_some_and(|s| &*s.item == "minecraft:shield");
+        let consumable = self
+            .stack_in(self.selected)
+            .is_some_and(|s| self.consumable(s).is_some());
+        self.touch_controls.vertical_movement = self.player.as_ref().is_some_and(|p| p.flying);
+        self.touch_controls.swimming = self
+            .player
+            .as_ref()
+            .is_some_and(|p| p.fluids.was_touching_water);
+        self.touch_controls.mounted = self.riding.is_some();
+        self.touch_controls.sneaking = self
+            .player
+            .as_ref()
+            .is_some_and(|p| p.shift_key_down);
+        self.touch_controls.break_progress = self.mining.as_ref().map_or(0.0, |m| m.progress);
+        self.touch_controls.projectile_crosshair = projectile_crosshair;
+        self.touch_controls.shield_available = main_shield || off_shield;
+        self.touch_controls.hold_uses_item = projectile_crosshair || main_shield || consumable;
+
+        let mut pad_state = self.touch_controls.poll_state();
+        let now = Instant::now();
+        if self.touch_use_until.is_some_and(|t| now < t) {
+            pad_state.triggers[0] = 1.0;
+        } else {
+            self.touch_use_until = None;
+        }
+        if self.touch_attack_until.is_some_and(|t| now < t) {
+            pad_state.triggers[1] = 1.0;
+        } else {
+            self.touch_attack_until = None;
+        }
+        self.pad.injected = pad_state;
+
+        if let Some(held_use) = self.touch_controls.take_tap() {
+            self.touch_tapped = self
+                .touch_controls
+                .aim
+                .map(|p| (now + Duration::from_millis(160), p));
+            let sneaking = self.touch_controls.sneaking;
+            if !held_use && !sneaking && self.touch_hits_entity() {
                 self.pad.injected.triggers[1] = 1.0;
-            }
-            crate::touch::TouchAction::AttackStop => {
-                self.left = false;
-                self.pad.injected.triggers[1] = 0.0;
-            }
-            crate::touch::TouchAction::Use(point) => {
-                self.touch_tapped = Some((Instant::now() + Duration::from_millis(150), point));
-                let sneaking = self.player.as_ref().is_some_and(|p| p.shift_key_down);
-                if !sneaking && self.touch_hits_entity() {
-                    self.left = true;
-                    self.pad.injected.triggers[1] = 1.0;
-                    self.touch_attack_until = Some(Instant::now() + Duration::from_millis(80));
-                    self.clicks.miss_time = 0;
-                    if self.remote.is_some() {
-                        self.remote_start_attack();
-                    } else {
-                        self.attack();
-                    }
+                self.touch_attack_until = Some(now + Duration::from_millis(80));
+                self.clicks.miss_time = 0;
+                if self.remote.is_some() {
+                    self.remote_start_attack();
                 } else {
-                    self.pad.injected.triggers[0] = 1.0;
-                    self.touch_use_until = Some(Instant::now() + Duration::from_millis(80));
+                    self.attack();
                 }
+            } else {
+                self.pad.injected.triggers[0] = 1.0;
+                self.touch_use_until = Some(now + Duration::from_millis(80));
             }
-            crate::touch::TouchAction::SelectSlot(slot) => {
-                self.selected = slot;
+        }
+
+        if std::mem::take(&mut self.touch_controls.clicked) {
+            self.audio.play_button_click();
+        }
+        if std::mem::take(&mut self.touch_controls.chat_requested) {
+            let _ = self.key_pressed(KeyCode::KeyT, KeyCode::KeyT);
+        }
+        if std::mem::take(&mut self.touch_controls.settings_requested) {
+            self.touch_settings_open = true;
+            self.touch_controls.clear();
+            self.pad.injected = Default::default();
+            self.audio.play_button_click();
+        }
+        if std::mem::take(&mut self.touch_controls.debug_requested) {
+            let _ = self.key_pressed(KeyCode::F3, KeyCode::F3);
+        }
+        if std::mem::take(&mut self.touch_controls.perspective_requested) {
+            let _ = self.key_pressed(KeyCode::F5, KeyCode::F5);
+        }
+        for (token, down) in self.touch_controls.key_events() {
+            if down && token == "action:key.swapOffhand" {
+                let _ = self.key_pressed(KeyCode::KeyF, KeyCode::KeyF);
             }
-            _ => {}
         }
     }
 
@@ -412,26 +438,31 @@ impl Game<'_> {
             if self.captured {
                 self.capture(false);
             }
-            let (gw, gh, gui_scale) = self.renderer.as_ref().map_or((640.0, 360.0, 1.0), |r| {
-                let b = horizon_client::hud::HudBatch::new(
-                    [r.config.width, r.config.height],
-                    self.settings.gui_scale_inputs(),
-                );
-                (b.width, b.height, b.scale)
-            });
+            let (sw, sh, gw, gh, gui_scale) = self
+                .renderer
+                .as_ref()
+                .map_or((1280u32, 720u32, 640.0, 360.0, 2.0), |r| {
+                    let b = horizon_client::hud::HudBatch::new(
+                        [r.config.width, r.config.height],
+                        self.settings.gui_scale_inputs(),
+                    );
+                    (r.config.width.max(1), r.config.height.max(1), b.width, b.height, b.scale)
+                });
+            self.touch_controls.viewport(sw, sh);
             if !self.touch_playing() {
-                let reset_actions = self.touch_controls.reset_gameplay();
-                for a in reset_actions {
-                    self.apply_touch_action(a);
+                if self.touch_controls.owns_pointer(touch.id) || self.pad.injected != Default::default() {
+                    self.touch_controls.clear();
+                    self.pad.injected = Default::default();
                 }
                 if self.touch_screen_shows_esc() {
-                    let (consumed, triggered) =
-                        self.touch_controls.handle_esc_touch(touch, gui_scale, gw, gh);
+                    let (consumed, triggered) = self.touch_esc.handle(
+                        touch,
+                        sw as f32,
+                        sh as f32,
+                        self.touch_controls.esc_rect(),
+                    );
                     if triggered {
-                        let _ = self.key_pressed(
-                            winit::keyboard::KeyCode::Escape,
-                            winit::keyboard::KeyCode::Escape,
-                        );
+                        let _ = self.key_pressed(KeyCode::Escape, KeyCode::Escape);
                         #[cfg(target_os = "android")]
                         if self.captured {
                             self.capture(false);
@@ -441,16 +472,45 @@ impl Game<'_> {
                         return;
                     }
                 }
-                let slop = crate::touch::SLOP_PX;
-                let events = self.touch_pointer.event(touch, slop);
+                let events = self.touch_pointer.event(touch, crate::touch::SLOP_PX);
                 for ev in events {
                     self.handle_window_event(event_loop, id, ev, origin);
                 }
                 return;
             } else {
-                let actions = self.touch_controls.handle_touch(touch, gui_scale, gw, gh);
-                for action in actions {
-                    self.apply_touch_action(action);
+                let norm = [
+                    touch.location.x as f32 / sw as f32,
+                    touch.location.y as f32 / sh as f32,
+                ];
+                if touch.phase == winit::event::TouchPhase::Started {
+                    let gui_p = [
+                        touch.location.x as f32 / gui_scale.max(1.0),
+                        touch.location.y as f32 / gui_scale.max(1.0),
+                    ];
+                    if let Some(slot) = horizon_client_render::touch::hotbar_slot(gw, gh, gui_p) {
+                        self.selected = slot;
+                        self.touch_controls.ignore(touch.id);
+                        return;
+                    }
+                }
+                let delta = self.touch_controls.update(
+                    touch.id,
+                    norm,
+                    touch.phase == winit::event::TouchPhase::Started,
+                    matches!(
+                        touch.phase,
+                        winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                    ),
+                );
+                if delta != [0.0, 0.0] {
+                    let turn = horizon_client_render::touch::camera_delta(
+                        delta,
+                        sw,
+                        sh,
+                        &self.touch_controls.settings,
+                    );
+                    self.turn_player(f64::from(turn[0]) / 0.15, f64::from(turn[1]) / 0.15);
+                    self.last_input = Instant::now();
                 }
                 return;
             }
@@ -648,22 +708,18 @@ impl Game<'_> {
         if self.pending_save.is_some() {
             return;
         }
+        if self.options.player_name.is_none()
+            && let Some(name) = self.accounts_ui.active_name()
+        {
+            self.options.player_name = Some(name.to_owned());
+        }
+        if let Some(name) = self.accounts_ui.poll() {
+            self.options.player_name = Some(name);
+        }
         #[cfg(target_os = "android")]
         self.android_input_frame(event_loop);
         if self.touch_active && self.touch_playing() {
-            let actions = self.touch_controls.frame(Instant::now());
-            for action in actions {
-                self.apply_touch_action(action);
-            }
-        }
-        if self.touch_use_until.is_some_and(|t| Instant::now() >= t) {
-            self.touch_use_until = None;
-            self.pad.injected.triggers[0] = 0.0;
-        }
-        if self.touch_attack_until.is_some_and(|t| Instant::now() >= t) {
-            self.touch_attack_until = None;
-            self.pad.injected.triggers[1] = 0.0;
-            self.left = false;
+            self.touch_frame();
         }
         if self.touch_tapped.is_some_and(|(t, _)| Instant::now() >= t) {
             self.touch_tapped = None;

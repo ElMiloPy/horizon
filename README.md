@@ -10,6 +10,22 @@
   Play on existing worlds and servers.
 </p>
 
+> [!NOTE]
+> **Personal Fork Notice & Attribution:** This is a personal Android fork/repository of Horizon and is **not meant to be perfect**.
+> The Android touch control system and button icon assets, the in-game Microsoft & offline account switcher, the in-game skin picker, and the Android performance optimizations (interior leaf canopy culling, mobile terrain upload budgeting, worker-thread cap, and bounded mesh/audio cache budgets) are copied and adapted from [starling-client/starling](https://github.com/starling-client/starling).
+
+### Fork Features
+
+> Keep this list updated whenever a new fork-specific feature is added.
+
+- **Android Port (`arm64-v8a`):** Native Android `NativeActivity` port built via `packaging/android/build_apk.py` (works on-device in Termux or with Android SDK), using Android's native system allocator (`system-allocator`) and 16 KB page alignment.
+- **Ultra-Compact Bundled Assets (`resources.hpk`):** Solid LZMA-compressed resource bundle containing game textures, models, optimized gameplay sounds, and verified Starling/Bedrock touch icon sprites (~24.5 MB total).
+- **Touch Controls & Icons (from Starling):** All 4 Starling control schemes (Joystick + Crosshair, Joystick + Tap, D-Pad + Tap, D-Pad + Crosshair), authentic Bedrock/Starling touch icon sprites (with procedural MCPE bevel fallback), in-game Touch Settings panel, Esc button on inventory/container screens, hotbar taps, and tap-to-attack mobs.
+- **In-Game Offline & Online (Microsoft) Accounts (from Starling):** Switch, add, and remove offline accounts or sign in with Microsoft (OAuth 2.0 Device Code -> Xbox Live -> XSTS -> Minecraft Services) directly from the Title Screen without restarting.
+- **In-Game Skin Picker (from Starling):** Browse local PNG skins, import 64x64 / 64x32 skins from Downloads, preview Classic/Slim models in 2D, apply live in singleplayer and multiplayer, and upload to Microsoft profiles.
+- **Android Performance Optimizations (from Starling):** Interior leaf canopy culling (`LeafCullingMode::Solid`), 2 MiB per-frame mobile terrain upload cap, Android worker-thread cap (`<= 4`), and reduced mesh pool (8 MiB) & decoded audio cache (24 MiB) budgets.
+- **Zero Bloatware & Upstream-Friendly Simplifications:** Lean, self-contained modules with minimal diffs in upstream files so rebasing onto `horizon-rust/horizon` `main` stays simple and low-friction.
+
 <p align="center">
   <a href="https://playhorizon.dev/download"><img src="docs/media/readme/download-button.png" alt="Download the Horizon launcher for Windows, macOS and Linux" width="400"></a><br>
   <sub>You need your own copy of Minecraft: Java Edition.</sub>

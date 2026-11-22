@@ -69,6 +69,16 @@ pub fn prepare() -> Startup {
 
 #[cfg(target_os = "android")]
 pub fn main() {
+    let _ = horizon_engine_slots::install_platform(horizon_engine_slots::Platform {
+        install_packages: |_, _| {},
+        install_registration_data: |_| {},
+        install_parts: |_, _, _| Ok(()),
+        profiler_is_enabled: || false,
+        profiler_start: || false,
+        profiler_stop: || {},
+        profiler_summary: || String::new(),
+        profiler_firefox_profile: || Err("profiler unavailable".into()),
+    });
     let startup = prepare();
     start(
         horizon_mod_package::runtime::Runtime::default(),
@@ -140,6 +150,7 @@ pub fn start<G>(
         _capture,
     } = startup;
     runtime_environment::capture(&launch);
+    #[cfg(not(feature = "system-allocator"))]
     horizon_threads::configure_allocator();
     horizon_chat_filter::install();
     horizon_look::give();

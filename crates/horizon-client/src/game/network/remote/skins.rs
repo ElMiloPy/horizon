@@ -183,9 +183,43 @@ impl Game<'_> {
     }
 
     pub(super) fn update_remote_skins_body(&mut self) {
+        let skin_gen = horizon_client::skins::offline_skin_generation();
+        let offline_changed = self.offline_skin_gen != skin_gen;
+        if offline_changed {
+            self.offline_skin_gen = skin_gen;
+            self.skin_3d.replace(Default::default());
+        }
         let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
         let Some(r) = self.remote.as_mut() else {
+            // Singleplayer: apply the player's chosen local/offline skin directly to `player_model`.
+            if self.player_model.is_some() {
+                const OFFLINE: &str = "horizon/offline_skin";
+                if let Some(skin_data) = horizon_client::skins::offline_skin() {
+                    let (rgba, is_slim) = &*skin_data;
+                    if offline_changed
+                        || !self.skin_slots.contains(OFFLINE)
+                        || !self.gui.atlas.sprites.contains_key(OFFLINE)
+                    {
+                        self.store_skin(OFFLINE.into(), rgba.clone());
+                    }
+                    let kind = self.player_model.as_ref().map(|m| m.kind.clone());
+                    let skin_3d = kind
+                        .as_ref()
+                        .and_then(|kind| self.skin_3d_model(kind, OFFLINE, *is_slim));
+                    if let Some(mob) = self.player_model.as_mut() {
+                        mob.skin = Some(OFFLINE.into());
+                        mob.slim = *is_slim;
+                        mob.skin_3d = skin_3d;
+                    }
+                } else if offline_changed
+                    && let Some(mob) = self.player_model.as_mut()
+                {
+                    mob.skin = None;
+                    mob.slim = false;
+                    mob.skin_3d = None;
+                }
+            }
             return;
         };
         let local = local.unwrap_or(r.profile);
@@ -241,13 +275,17 @@ impl Game<'_> {
                 resolved.push((uuid, skin));
             }
         }
-        // An offline name's skin from the launcher, where neither the server
+        // An offline name's skin from the launcher or in-game skin picker, where neither the server
         // nor an account gives the local player one.
         if !resolved.iter().any(|(u, _)| *u == local)
-            && let Some((rgba, is_slim)) = horizon_client::skins::offline_skin()
+            && let Some(skin_data) = horizon_client::skins::offline_skin()
         {
+            let (rgba, is_slim) = &*skin_data;
             const OFFLINE: &str = "horizon/offline_skin";
-            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
+            if offline_changed
+                || !self.skin_slots.contains(OFFLINE)
+                || !self.gui.atlas.sprites.contains_key(OFFLINE)
+            {
                 self.store_skin(OFFLINE.into(), rgba.clone());
             }
             if *is_slim {
