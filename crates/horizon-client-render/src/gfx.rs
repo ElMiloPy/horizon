@@ -4458,9 +4458,10 @@ impl Renderer {
             )
         });
         crate::mesher::meshlet::pack_meshlets(mesh_terrain.is_some());
-        let multi_draw = device
-            .features()
-            .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
+        let multi_draw = !cfg!(target_os = "android")
+            && device
+                .features()
+                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
             && indirect_execution;
         let translucent = match &flat {
             Some(f) if translucent_pulled(&adapter.get_info(), multi_draw, true) => {
@@ -4543,6 +4544,7 @@ impl Renderer {
         let cull_env = std::env::var("HORIZON_GPU_CULL");
         let adapter_info = adapter.get_info();
         let cull = cull::Cull::supported(&adapter, &device)
+            .filter(|_| !cfg!(target_os = "android"))
             .filter(|_| occlusion_culling_requested(&adapter_info, cull_env.as_deref().ok()))
             .map(|depth_test| match cull_env.as_deref() {
                 Ok("shader") => cull::DepthTest::InShader,

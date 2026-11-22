@@ -169,17 +169,24 @@ pub(super) async fn open_adapter(
     // (`MC_GL_KHR_shader_subgroup_*`); storage buffers in vertex shaders, clearing and
     // atomics on images: their buffers and images. Filtering 32-bit float textures: shader
     // packs' RGBA32F buffers, which GL filters and mipmaps. Count draws: GPU culling's (`gpu_culling`).
+    let mobile = cfg!(target_os = "android");
     let features = timing::GpuTimer::features(adapter)
         | pack_timing::PassTiming::features(adapter)
-        | cull::Cull::features(adapter)
+        | if mobile {
+            wgpu::Features::empty()
+        } else {
+            cull::Cull::features(adapter) | mesh_shader::features(adapter)
+        }
         | oit::features(adapter)
         | super::rt::query::features(adapter, needs.rays)
-        | mesh_shader::features(adapter)
         | (adapter.features()
-            & (wgpu::Features::INDIRECT_FIRST_INSTANCE
-                | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
-                | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
-                | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            & (if mobile {
+                wgpu::Features::empty()
+            } else {
+                wgpu::Features::INDIRECT_FIRST_INSTANCE
+                    | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
+                    | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+            } | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
                 | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
                 | wgpu::Features::RG11B10UFLOAT_RENDERABLE
                 | wgpu::Features::SUBGROUP
@@ -203,7 +210,11 @@ pub(super) async fn open_adapter(
         label: Some("Horizon device"),
         required_features: features,
         required_limits: limits,
-        memory_hints: MEMORY_HINTS,
+        memory_hints: if mobile {
+            wgpu::MemoryHints::MemoryUsage
+        } else {
+            MEMORY_HINTS
+        },
         experimental_features: mesh_shader::experimental(features),
         ..Default::default()
     };

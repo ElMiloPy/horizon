@@ -89,13 +89,23 @@ def run(*args, **kwargs):
 def build_library(profile):
     env = dict(os.environ)
     env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " " + PAGE_FLAGS).strip()
-    # Configure size optimizations via Cargo environment overrides so root Cargo.toml stays clean:
+    # Configure aggressive size optimizations via Cargo environment overrides so root Cargo.toml stays clean:
     prof_upper = profile.upper().replace("-", "_")
     env.setdefault(f"CARGO_PROFILE_{prof_upper}_OPT_LEVEL", "z")
-    env.setdefault(f"CARGO_PROFILE_{prof_upper}_LTO", "thin")
+    env.setdefault(f"CARGO_PROFILE_{prof_upper}_LTO", "fat")
     env.setdefault(f"CARGO_PROFILE_{prof_upper}_CODEGEN_UNITS", "1")
     env.setdefault(f"CARGO_PROFILE_{prof_upper}_PANIC", "abort")
+    env.setdefault(f"CARGO_PROFILE_{prof_upper}_DEBUG", "0")
+    env.setdefault(f"CARGO_PROFILE_{prof_upper}_STRIP", "symbols")
     env.setdefault(f"CARGO_PROFILE_{prof_upper}_INCREMENTAL", "false")
+    # Export only Android NativeActivity / JNI entry points so LTO + --gc-sections can strip
+    # unused dynamic symbols across the cdylib.
+    ver_script = ROOT / "target" / "android" / "exports.map"
+    ver_script.parent.mkdir(parents=True, exist_ok=True)
+    ver_script.write_text(
+        "{\n  global:\n    ANativeActivity_onCreate;\n    android_main;\n    Java_*;\n  local:\n    *;\n};\n",
+        encoding="utf-8",
+    )
     # Native compilation in Termux / aarch64 Android environment
     if (sys.platform.startswith("linux") or sys.platform == "android") and os.uname().machine in ("aarch64", "arm64") and not shutil.which("cargo-ndk"):
         run(
@@ -103,7 +113,8 @@ def build_library(profile):
             "--",
             "-C", "link-arg=-Wl,-z,max-page-size=16384",
             "-C", "link-arg=-fuse-ld=lld",
-            "-C", "link-arg=-Wl,--icf=all,--gc-sections,--pack-dyn-relocs=android+relr,-s",
+            "-C", f"link-arg=-Wl,--version-script={ver_script}",
+            "-C", "link-arg=-Wl,--icf=all,--gc-sections,--exclude-libs,ALL,--pack-dyn-relocs=android+relr,-s",
             "-C", "link-arg=-Wl,--wrap=open,--wrap=openat,--wrap=stat,--wrap=lstat,--wrap=fstat,--wrap=fstatat,--wrap=access,--wrap=opendir,--wrap=fdopendir,--wrap=readdir,--wrap=closedir,--wrap=dirfd,--wrap=close",
             cwd=ROOT, env=env,
         )

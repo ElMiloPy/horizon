@@ -818,6 +818,15 @@ pub fn main(app: AndroidApp) {
     }
     set_android_app(app.clone());
     horizon_client_render::logging::set_line_hook(log_line_hook);
+    let crash_dir = app.external_data_path();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = format!("PANIC: {info}");
+        logcat(log::Level::Error, &msg);
+        if let Some(dir) = &crash_dir {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(dir.join("last_crash.txt"), &msg);
+        }
+    }));
 
     let home: PathBuf = app
         .internal_data_path()
