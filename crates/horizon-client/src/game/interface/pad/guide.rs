@@ -59,6 +59,7 @@ impl Game<'_> {
         settings.enabled
             && settings.guide_detail != GuideDetail::Off
             && self.pad.in_use
+            && !self.touch_active
             && !self.pad.keyboard_took_over
             // Hidden once the radial menu shows, not on the opener's press: a quick tap draws
             // nothing, so the guide doesn't blink.

@@ -24,27 +24,62 @@ impl Startup {
 /// and resource marker metadata only: no logging, account loading, mods or worker threads.
 /// Account IO, cwd changes and command registration remain in Options::read, after leases.
 pub fn prepare() -> Startup {
+    #[cfg(not(target_os = "android"))]
     horizon_mod_package::holder::enter();
     let result: crate::Result<_> = (|| {
-        let mut command = std::process::Command::new(std::env::current_exe()?);
-        command.args(std::env::args_os().skip(1));
+        #[cfg(target_os = "android")]
+        let command = {
+            let mut c = std::process::Command::new("horizon-android");
+            c.args(crate::android::args());
+            c
+        };
+        #[cfg(not(target_os = "android"))]
+        let command = {
+            let mut c = std::process::Command::new(std::env::current_exe()?);
+            c.args(std::env::args_os().skip(1));
+            c
+        };
         let launch = LaunchArguments::for_command(&command)?;
         let options = game::Options::validate(launch.clone())?;
         Ok((launch, options))
     })();
     let (launch, options) = result.unwrap_or_else(|error| {
         eprintln!("Horizon: {error}");
+        #[cfg(target_os = "android")]
+        crate::android::finish_and_exit();
+        #[cfg(not(target_os = "android"))]
         std::process::exit(game::exit_code::USAGE);
     });
     let Some(options) = options else {
+        #[cfg(target_os = "android")]
+        crate::android::finish_and_exit();
+        #[cfg(not(target_os = "android"))]
         std::process::exit(0);
     };
+    #[cfg(target_os = "android")]
+    let capture = None;
+    #[cfg(not(target_os = "android"))]
     let capture = horizon_mod_package::holder::acquire(&launch);
     Startup {
         launch,
         options,
         _capture: capture,
     }
+}
+
+#[cfg(target_os = "android")]
+pub fn main() {
+    let startup = prepare();
+    start(
+        horizon_mod_package::runtime::Runtime::default(),
+        |_, _| (Vec::new(), ()),
+        CodeRuntime {
+            initialize: |_| {},
+            refusal: |_| None,
+            startup_refused: |_| false,
+        },
+        startup,
+    );
 }
 
 /// Refuse startup if any merged copy could not be installed, before loading any mod.
@@ -239,6 +274,9 @@ pub fn start<G>(
             eprintln!("Press Enter to close.");
             let _ = std::io::stdin().read_line(&mut String::new());
         }
+        #[cfg(target_os = "android")]
+        crate::android::finish_and_exit();
+        #[cfg(not(target_os = "android"))]
         std::process::exit(if usage {
             game::exit_code::USAGE
         } else {
@@ -251,6 +289,8 @@ pub fn start<G>(
     if game::exit_code::restart_requested() {
         std::process::exit(game::exit_code::RESTART);
     }
+    #[cfg(target_os = "android")]
+    crate::android::finish_and_exit();
 }
 
 pub(crate) fn install_client_hooks() {

@@ -402,6 +402,13 @@ thread_local! {
     static UNTAPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+static LINE_HOOK: std::sync::OnceLock<fn(&str, &str, &str, &str)> = std::sync::OnceLock::new();
+
+/// Installs a process-wide log line callback (e.g. Android logcat forwarding).
+pub fn set_line_hook(hook: fn(&str, &str, &str, &str)) {
+    let _ = LINE_HOOK.set(hook);
+}
+
 /// Keeps every line logged from now on for `take_tapped` (`on`), or stops and forgets them.
 pub fn set_tap(on: bool) {
     TAPPING.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -529,6 +536,9 @@ impl Logger {
     }
 
     fn send(&self, thread: &str, level: log::Level, message: &str, stderr: Option<String>) {
+        if let Some(hook) = LINE_HOOK.get() {
+            hook(level.as_str(), thread, message, "");
+        }
         let now = Local::now();
         // As log4j writes a multi-line message: the pattern once, the rest as it is.
         let lines: Vec<String> = message

@@ -297,10 +297,11 @@ pub(super) fn run_loading(
         ui_at: None,
         title_drawn: false,
         menu,
+        touch_pointer: Default::default(),
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
-    let result = EventLoop::new()?.run_app(&mut app);
+    let result = create_event_loop()?.run_app(&mut app);
     narrator::stop();
     match &mut app {
         // Ready: splitscreen around P1's game.

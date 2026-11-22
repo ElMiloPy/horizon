@@ -25,11 +25,16 @@ impl Game<'_> {
     pub(super) fn apply_mouse_look(&mut self) {
         let mut look = self.look_options();
         let time = self.started.elapsed().as_secs_f64();
-        let pointer = self.captured || self.agent_pointer;
+        let pointer = self.captured
+            || self.agent_pointer
+            || (self.touch_active && self.touch_playing());
         let grabbed = pointer
             && self.screen == Screen::Playing
             && (self.player.is_some() || self.studio.flying());
-        let active = self.focused || self.agent_pointer;
+        let active = self.focused
+            || self.agent_pointer
+            || (self.touch_active && self.touch_playing())
+            || cfg!(target_os = "android");
         if active
             && grabbed
             && mod_api::__private::listened(mod_api::HookId::CalculatePlayerTurn)
@@ -197,16 +202,30 @@ impl Game<'_> {
             || window.inner_size().into(),
             |r| [r.config.width, r.config.height],
         );
+        #[cfg(not(target_os = "android"))]
         let [vx, vy] = self.view_at.map(f64::from);
+        #[cfg(not(target_os = "android"))]
         let centre = winit::dpi::PhysicalPosition::new(
             vx + f64::from(size[0]) / 2.0,
             vy + f64::from(size[1]) / 2.0,
         );
+        #[cfg(not(target_os = "android"))]
         let warp = |window: &Window| {
             let _ = window.set_cursor_position(centre);
         };
         let scale = HudBatch::new(size, self.settings.gui_scale_inputs()).scale;
         let was_grabbed = self.captured;
+        #[cfg(target_os = "android")]
+        {
+            if capture {
+                self.mouse.set_ignore_first_move();
+            }
+            self.captured = capture;
+            if self.captured != was_grabbed {
+                crate::android::capture_pointer(self.captured);
+            }
+        }
+        #[cfg(not(target_os = "android"))]
         if self.internal_grab() {
             // Its grab is internal (an agent turns the view with `mouse-move`). A grab the
             // window already held when a scripted run began stays the system's until the

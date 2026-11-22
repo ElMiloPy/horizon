@@ -19,6 +19,18 @@ pub(super) fn leave_fullscreen_after(
     }
 }
 
+pub(super) fn create_event_loop() -> std::result::Result<EventLoop<()>, EventLoopError> {
+    #[cfg(target_os = "android")]
+    {
+        use winit::platform::android::EventLoopBuilderExtAndroid;
+        EventLoop::builder()
+            .with_android_app(crate::android::android_app())
+            .build()
+    }
+    #[cfg(not(target_os = "android"))]
+    EventLoop::new()
+}
+
 pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     if game.options.headless {
         // No display to open winit's loop on: the game's own loop.
@@ -33,7 +45,7 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
         return result;
     }
     let mut split = split::Split::new(game);
-    let result = EventLoop::new()?.run_app(&mut split);
+    let result = create_event_loop()?.run_app(&mut split);
     game = split.host;
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
@@ -76,6 +88,7 @@ pub(super) struct Loading {
     pub(super) ui_at: Option<Instant>,
     pub(super) title_drawn: bool,
     pub(super) menu: startup_menu::StartupMenu,
+    pub(super) touch_pointer: crate::touch::TouchPointer,
     pub(super) error: Option<Box<dyn std::error::Error>>,
 }
 /// How long the handoff waits for the first title frame before building the
@@ -91,6 +104,19 @@ impl Loading {
             || self.ui_at.is_none_or(|at| at.elapsed() >= TITLE_FRAME_WAIT)
     }
     pub(super) fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            // Back from the background (Android), as Game::resumed.
+            let size = window.inner_size();
+            if let Some(r) = &mut self.renderer
+                && let Err(e) = r.resume(size.width, size.height)
+            {
+                log::warn!("Horizon: the window's surface did not come back: {e}");
+            }
+            #[cfg(target_os = "android")]
+            crate::android::capture_pointer(false);
+            window.request_redraw();
+            return;
+        }
         if self.window.is_some() {
             return;
         }
@@ -131,6 +157,8 @@ impl Loading {
             horizon_threads::system_menu::suppress(hwnd);
         }
         drop(window_step);
+        #[cfg(target_os = "android")]
+        crate::android::capture_pointer(false);
         // The renderer takes seconds to build and winit's window sits white
         // until the first frame presents, so paint the boot screen on it and
         // keep repainting it as the console's lines arrive; the wgpu frames
@@ -188,6 +216,55 @@ impl Loading {
 
         self.window = Some(window);
     }
+    #[cfg(target_os = "android")]
+    pub(super) fn android_input_frame(&mut self, event_loop: &ActiveEventLoop) {
+        let events = crate::android::take_mouse_events();
+        if events.is_empty() {
+            return;
+        }
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let id = window.id();
+        let device_id = DeviceId::dummy();
+        let mut redraw = false;
+        for event in events {
+            let event = match event {
+                crate::android::MouseEvent::Moved(x, y) => {
+                    redraw = true;
+                    WindowEvent::CursorMoved {
+                        device_id,
+                        position: winit::dpi::PhysicalPosition::new(x, y),
+                    }
+                }
+                crate::android::MouseEvent::Button(button, down) => {
+                    redraw = true;
+                    WindowEvent::MouseInput {
+                        device_id,
+                        state: if down {
+                            ElementState::Pressed
+                        } else {
+                            ElementState::Released
+                        },
+                        button,
+                    }
+                }
+                crate::android::MouseEvent::Wheel(x, y) => {
+                    redraw = true;
+                    WindowEvent::MouseWheel {
+                        device_id,
+                        delta: MouseScrollDelta::LineDelta(x, y),
+                        phase: winit::event::TouchPhase::Moved,
+                    }
+                }
+                crate::android::MouseEvent::Motion(..) => continue,
+            };
+            self.window_event(event_loop, id, event);
+        }
+        if redraw {
+            window.request_redraw();
+        }
+    }
     pub(super) fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -195,6 +272,14 @@ impl Loading {
         mut event: WindowEvent,
     ) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
+            return;
+        }
+        if let WindowEvent::Touch(ref touch) = event {
+            let slop = crate::touch::SLOP_PX;
+            let events = self.touch_pointer.event(touch, slop);
+            for ev in events {
+                self.window_event(event_loop, id, ev);
+            }
             return;
         }
         follow_keymap(&mut event);
@@ -251,7 +336,16 @@ impl Loading {
         // The title frame's wait starts once its renderer is built.
         self.ui_at = Some(Instant::now());
     }
+    /// The window is going away (Android): its surface goes with it.
+    pub(super) fn suspended(&mut self) {
+        if let Some(r) = &mut self.renderer {
+            r.suspend();
+        }
+        horizon_client_render::logging::flush();
+    }
     pub(super) fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        self.android_input_frame(event_loop);
         // The loop may run once more after exit(): keep the first error, the
         // one that ended loading.
         if self.error.is_some() {
@@ -269,6 +363,12 @@ impl Loading {
             return;
         }
         self.poll_menu_realms(event_loop);
+        if self.renderer.as_ref().is_some_and(|r| r.detached) {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(100),
+            ));
+            return;
+        }
         if let Some(w) = &self.window {
             if self.options.as_ref().is_some_and(|o| o.offscreen) {
                 self.draw();
@@ -312,7 +412,7 @@ impl Loading {
             );
         }
     }
-    pub(super) fn finish(&mut self, mut loaded: Loaded) -> Result<Option<split::Split<'static>>> {
+    pub(super) fn finish(&mut self, mut loaded: Loaded) -> Result<Option<Box<split::Split<'static>>>> {
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();
@@ -420,7 +520,7 @@ impl Loading {
             renderer_ms,
             game_ms
         );
-        Ok(Some(split::Split::new(game)))
+        Ok(Some(Box::new(split::Split::new(game))))
     }
 }
 
@@ -435,6 +535,12 @@ impl ApplicationHandler for App {
         match self {
             App::Loading(loading) => loading.resumed(event_loop),
             App::Ready(game) => game.resumed(event_loop),
+        }
+    }
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        match self {
+            App::Loading(loading) => loading.suspended(),
+            App::Ready(game) => game.suspended(event_loop),
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -474,7 +580,7 @@ impl ApplicationHandler for App {
                     None => Step::Waiting,
                     Some(Err(e)) => Step::Failed(e.into()),
                     Some(Ok(loaded)) => match loading.finish(loaded) {
-                        Ok(Some(game)) => Step::Ready(Box::new(game)),
+                        Ok(Some(game)) => Step::Ready(game),
                         Ok(None) => Step::Done,
                         Err(e) => Step::Failed(e),
                     },

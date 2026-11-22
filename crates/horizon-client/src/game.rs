@@ -5,7 +5,8 @@ use key_codes::{
     glfw_button, glfw_modifiers, keyboard_button,
 };
 use loading_screen::{
-    App, Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
+    App, Loading, create_event_loop, leave_fullscreen_after, missing_resources, run_event_loop,
+    unclean_start_recovery,
 };
 use motion_ids::{motion_at, motion_block_entity};
 use resource_load::{
@@ -1154,6 +1155,12 @@ struct Game<'a> {
     last_input: Instant,
     /// Controllers (Horizon's own).
     pad: pad::Pads,
+    touch_pointer: crate::touch::TouchPointer,
+    touch_controls: crate::touch::TouchControls,
+    touch_active: bool,
+    touch_use_until: Option<Instant>,
+    touch_attack_until: Option<Instant>,
+    touch_tapped: Option<(Instant, [f32; 2])>,
     frames: u64,
     /// The glint clock and options, read once per frame (game/interface/item_draw.rs).
     glint_frame: horizon_client::item_render::GlintFrame,
@@ -2221,7 +2228,10 @@ impl Game<'_> {
             let eye = [x, y + f64::from(e.eye_height), z];
             return Some((eye, pick_view_vector(e.y_rot, e.x_rot)));
         }
-        Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
+        let dir = self
+            .touch_aim_dir()
+            .unwrap_or_else(|| pick_view_vector(self.yaw, self.pitch));
+        Some((self.eye_position()?, dir))
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
@@ -4803,6 +4813,7 @@ impl Game<'_> {
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
                 && !self.overlay_holds_view()
+                && !(self.touch_active && self.touch_playing())
             {
                 let attack = (indicator == 1).then_some(strength);
                 let full = attack.is_some_and(|a| {
@@ -5146,6 +5157,14 @@ impl Game<'_> {
         self.draw_studio_bars(&mut batch);
         if show_hud {
             self.draw_pad_guide(&mut batch, guide_from);
+        }
+        if self.touch_active && !self.ui.hide_gui {
+            if self.touch_playing() {
+                let progress = self.mining.as_ref().map_or(0.0, |m| m.progress);
+                self.touch_controls.draw(&mut batch, &self.gui.atlas, progress);
+            } else if self.touch_screen_shows_esc() {
+                self.touch_controls.draw_esc(&mut batch, &self.gui.atlas);
+            }
         }
         batch
     }
@@ -8301,7 +8320,8 @@ impl Game<'_> {
             self.entity_targeted(),
             can_build,
             self.shows_panorama(),
-        ) {
+        ) && (!self.touch_active || self.touch_aim_point().is_some())
+        {
             self.pick()
                 .filter(|h| {
                     self.may_build()
@@ -10664,6 +10684,12 @@ impl<'a> Game<'a> {
             previous: now,
             last_input: now,
             pad: Default::default(),
+            touch_pointer: Default::default(),
+            touch_controls: Default::default(),
+            touch_active: cfg!(target_os = "android"),
+            touch_use_until: None,
+            touch_attack_until: None,
+            touch_tapped: None,
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),

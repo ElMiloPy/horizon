@@ -102,6 +102,7 @@ impl Game<'_> {
     /// Declared buttons show their glyph: the pad drives, and a menu is open. Focus or crosshair.
     pub(super) fn pad_action_glyphs_on(&self) -> bool {
         self.pad.in_use
+            && !self.touch_active
             && !self.pad.menu.keyboard
             && !self.pad_keyboard_captures()
             && self.pad.menu.pos.is_some()

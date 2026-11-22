@@ -55,7 +55,7 @@ pub(super) struct Pads {
     #[cfg(feature = "controllers")]
     devices: hardware::Devices,
     /// The virtual pad of `horizon-ctl pad`.
-    injected: PadState,
+    pub(in crate::game) injected: PadState,
     /// The virtual pad was in use at the last poll.
     virtual_input: bool,
     /// Buttons a `pad ... tap` releases at the next poll.
@@ -453,10 +453,13 @@ impl Game<'_> {
         }
         let threshold = self.settings.controller.trigger_threshold;
         let edges = self.pad.edges.update(&state, threshold);
-        if activity && self.pad_focused() {
+        if activity && self.pad_focused() && !self.touch_active {
             self.last_input = Instant::now();
             self.pad.in_use = true;
             self.pad.keyboard_took_over = false;
+        }
+        if self.touch_active {
+            self.pad.in_use = false;
         }
         self.pad.state = state;
         self.pad_radial_frame();

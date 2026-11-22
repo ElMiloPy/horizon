@@ -2017,6 +2017,7 @@ pub struct Renderer {
     readback: readback::Readback,
     pub info: wgpu::AdapterInfo,
     pub suspended: bool,
+    pub detached: bool,
     /// Why the last window frame was not drawn; `None` once one is (`not_drawn`).
     not_drawn: Option<NotDrawn>,
     /// The reason the frame being drawn names at its way out, for `render` to settle.
@@ -4884,6 +4885,7 @@ impl Renderer {
             readback: readback::Readback::default(),
             info,
             suspended: !drawable_size(size.width, size.height, max_side),
+            detached: false,
             not_drawn: None,
             refusal: None,
             acquire_validation_failures: 0,
@@ -5120,6 +5122,38 @@ impl Renderer {
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             self.surface.take().and_then(|s| Arc::try_unwrap(s).ok());
     }
+    /// The window is going away (Android destroys it in the background): drop its surface now,
+    /// while the window it was made from still exists, and draw nothing until `resume`. Not kept
+    /// as the spare (`release_surface`): `resume` would take it back, on a window that is gone,
+    /// and draw to nothing (a black screen on the way back from the browser or the file picker).
+    pub fn suspend(&mut self) {
+        self.frame_gen.stop();
+        self.stop_display_reader();
+        self.queue.wait();
+        self.surface = None;
+        *self
+            .spare_surface
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.suspended = true;
+        self.detached = true;
+    }
+    /// The window is back, maybe at another size: a new surface on it.
+    pub fn resume(&mut self, width: u32, height: u32) -> Result<()> {
+        if !drawable_size(width, height, self.device.limits().max_texture_dimension_2d) {
+            return Ok(());
+        }
+        let resized = [width, height] != [self.config.width, self.config.height];
+        self.config.width = width;
+        self.config.height = height;
+        self.recreate_surface()?;
+        if resized {
+            self.remake_depth();
+        }
+        self.suspended = false;
+        self.detached = false;
+        Ok(())
+    }
     /// Reattach a window after surface loss or a failed renderer replacement.
     pub fn recreate_surface(&mut self) -> Result<()> {
         self.queue.wait();
@@ -5160,6 +5194,12 @@ impl Renderer {
     }
     /// The world's depth, which occlusion culling's test and post effects may read.
     fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
+        #[cfg(target_os = "android")]
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        #[cfg(not(target_os = "android"))]
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC;
         device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("Horizon depth"),
@@ -5175,9 +5215,7 @@ impl Renderer {
                 // TEXTURE_BINDING: a post effect may read the depth buffer.
                 // COPY_SRC: improved transparency and a native shader pack's
                 // `opaque_depth` copy it.
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
+                usage,
                 view_formats: &[],
             })
             .create_view(&Default::default())
@@ -7560,6 +7598,9 @@ impl Renderer {
     }
     #[horizon_mod_api_macros::replaceable]
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
+        if self.suspended {
+            return Ok(false);
+        }
         // A lost device cannot accept uploads either. Leave recovery to the
         // owner instead of submitting atlas patches to the invalid device.
         if self.device_lost() {

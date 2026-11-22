@@ -10,6 +10,205 @@ pub(super) enum ClientQuit {
 }
 
 impl Game<'_> {
+    pub(super) fn touch_playing(&self) -> bool {
+        self.screen == Screen::Playing
+            && self.title.is_none()
+            && self.player.is_some()
+            && !self.screen_over_playing()
+    }
+
+    pub(super) fn touch_screen_shows_esc(&self) -> bool {
+        self.player.is_some()
+            && self.title.is_none()
+            && (matches!(
+                self.screen,
+                Screen::Inventory
+                    | Screen::Creative
+                    | Screen::Chat
+                    | Screen::Advancements
+                    | Screen::Stats
+            ) || self.screen_over_playing())
+    }
+
+    pub(super) fn touch_hits_entity(&self) -> bool {
+        if let Some((_, distance, _)) = self.mob_hit() {
+            if self.before_block(distance) && self.held_range_allows(distance) {
+                return true;
+            }
+        }
+        if let Some(hit) = self.remote_object_hit(true) {
+            if self.before_block(hit.distance) && self.held_range_allows(hit.distance) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(super) fn touch_aim_point(&self) -> Option<[f32; 2]> {
+        if !self.touch_active || !self.touch_playing() {
+            return None;
+        }
+        self.touch_controls.aim().or_else(|| {
+            self.touch_tapped
+                .filter(|(until, _)| Instant::now() < *until)
+                .map(|(_, p)| p)
+        })
+    }
+
+    pub(super) fn touch_aim_dir(&self) -> Option<[f64; 3]> {
+        let p = self.touch_aim_point()?;
+        let fov = self.locator_camera?.3;
+        let (gw, gh) = self.renderer.as_ref().map_or((640.0, 360.0), |r| {
+            let b = horizon_client::hud::HudBatch::new(
+                [r.config.width, r.config.height],
+                self.settings.gui_scale_inputs(),
+            );
+            (b.width, b.height)
+        });
+        let (sx, sy) = (
+            2.0 * f64::from(p[0]) / f64::from(gw) - 1.0,
+            1.0 - 2.0 * f64::from(p[1]) / f64::from(gh),
+        );
+        let t = (f64::from(fov).to_radians() / 2.0).tan();
+        let forward = glam::DVec3::from_array(view_vector(self.yaw, self.pitch));
+        let yaw = f64::from(self.yaw).to_radians();
+        let right = glam::DVec3::new(-yaw.cos(), 0.0, -yaw.sin());
+        let up = right.cross(forward);
+        let dir = forward + right * (sx * t * f64::from(gw) / f64::from(gh)) + up * (sy * t);
+        Some(dir.normalize().to_array())
+    }
+
+    #[cfg(target_os = "android")]
+    pub(super) fn android_input_frame(&mut self, event_loop: &dyn EventLoopCtl) {
+        if crate::android::pointer_capture_lost() && self.captured {
+            self.capture(false);
+        }
+        if crate::android::keyboard_used() {
+            self.touch_active = false;
+            if self.screen == Screen::Playing && !self.captured {
+                self.capture(true);
+            }
+        }
+        let events = crate::android::take_mouse_events();
+        if events.is_empty() {
+            return;
+        }
+        self.touch_active = false;
+        let Some(id) = self.window.as_ref().map(|w| w.id()) else {
+            return;
+        };
+        let device_id = DeviceId::dummy();
+        for event in events {
+            let event = match event {
+                crate::android::MouseEvent::Moved(x, y) => WindowEvent::CursorMoved {
+                    device_id,
+                    position: winit::dpi::PhysicalPosition::new(x, y),
+                },
+                crate::android::MouseEvent::Button(button, down) => WindowEvent::MouseInput {
+                    device_id,
+                    state: if down {
+                        ElementState::Pressed
+                    } else {
+                        ElementState::Released
+                    },
+                    button,
+                },
+                crate::android::MouseEvent::Wheel(x, y) => WindowEvent::MouseWheel {
+                    device_id,
+                    delta: MouseScrollDelta::LineDelta(x, y),
+                    phase: winit::event::TouchPhase::Moved,
+                },
+                crate::android::MouseEvent::Motion(x, y) => {
+                    if self.screen == Screen::Playing && !self.captured {
+                        self.capture(true);
+                    }
+                    if self.pending_save.is_none()
+                        && (self.captured || self.screen == Screen::Playing)
+                        && (self.focused || cfg!(target_os = "android"))
+                        && self.keyboard_mouse
+                        && (!self.options.offscreen || self.split_window)
+                        && self.screen == Screen::Playing
+                    {
+                        self.note_input(
+                            input_trace::InputOrigin::User,
+                            input_trace::TraceKind::Motion { x, y },
+                        );
+                        self.mouse.on_move(0.0, 0.0, x, y, true, true);
+                        self.last_input = Instant::now();
+                    }
+                    continue;
+                }
+            };
+            self.handle_window_event(event_loop, id, event, input_trace::InputOrigin::User);
+        }
+    }
+
+    pub(super) fn apply_touch_action(&mut self, action: crate::touch::TouchAction) {
+        match action {
+            crate::touch::TouchAction::Stick(stick) => {
+                self.pad.injected.left = stick;
+            }
+            crate::touch::TouchAction::Sprint(sprint) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::LeftStick, sprint);
+            }
+            crate::touch::TouchAction::Look(dx, dy) => {
+                self.mouse.add_motion(dx, dy);
+                self.last_input = Instant::now();
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Jump) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::South, true);
+            }
+            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Jump) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::South, false);
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Sneak) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::East, true);
+            }
+            crate::touch::TouchAction::ButtonUp(crate::touch::TouchButton::Sneak) => {
+                self.pad.injected.set(horizon_client::gamepad::Button::East, false);
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Pause) => {
+                let _ = self.key_pressed(winit::keyboard::KeyCode::Escape, winit::keyboard::KeyCode::Escape);
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Chat) => {
+                let _ = self.key_pressed(winit::keyboard::KeyCode::KeyT, winit::keyboard::KeyCode::KeyT);
+            }
+            crate::touch::TouchAction::ButtonDown(crate::touch::TouchButton::Inventory) => {
+                let _ = self.key_pressed(winit::keyboard::KeyCode::KeyE, winit::keyboard::KeyCode::KeyE);
+            }
+            crate::touch::TouchAction::AttackStart => {
+                self.left = true;
+                self.pad.injected.triggers[1] = 1.0;
+            }
+            crate::touch::TouchAction::AttackStop => {
+                self.left = false;
+                self.pad.injected.triggers[1] = 0.0;
+            }
+            crate::touch::TouchAction::Use(point) => {
+                self.touch_tapped = Some((Instant::now() + Duration::from_millis(150), point));
+                let sneaking = self.player.as_ref().is_some_and(|p| p.shift_key_down);
+                if !sneaking && self.touch_hits_entity() {
+                    self.left = true;
+                    self.pad.injected.triggers[1] = 1.0;
+                    self.touch_attack_until = Some(Instant::now() + Duration::from_millis(80));
+                    self.clicks.miss_time = 0;
+                    if self.remote.is_some() {
+                        self.remote_start_attack();
+                    } else {
+                        self.attack();
+                    }
+                } else {
+                    self.pad.injected.triggers[0] = 1.0;
+                    self.touch_use_until = Some(Instant::now() + Duration::from_millis(80));
+                }
+            }
+            crate::touch::TouchAction::SelectSlot(slot) => {
+                self.selected = slot;
+            }
+            _ => {}
+        }
+    }
+
     /// Record the request without saving or entering other mod hooks from this hook.
     pub(super) fn request_client_quit(&self) -> bool {
         if !self.options.is_client_start()
@@ -207,6 +406,55 @@ impl Game<'_> {
             }
         }
         follow_keymap(&mut event);
+        if let WindowEvent::Touch(ref touch) = event {
+            self.touch_active = true;
+            #[cfg(target_os = "android")]
+            if self.captured {
+                self.capture(false);
+            }
+            let (gw, gh, gui_scale) = self.renderer.as_ref().map_or((640.0, 360.0, 1.0), |r| {
+                let b = horizon_client::hud::HudBatch::new(
+                    [r.config.width, r.config.height],
+                    self.settings.gui_scale_inputs(),
+                );
+                (b.width, b.height, b.scale)
+            });
+            if !self.touch_playing() {
+                let reset_actions = self.touch_controls.reset_gameplay();
+                for a in reset_actions {
+                    self.apply_touch_action(a);
+                }
+                if self.touch_screen_shows_esc() {
+                    let (consumed, triggered) =
+                        self.touch_controls.handle_esc_touch(touch, gui_scale, gw, gh);
+                    if triggered {
+                        let _ = self.key_pressed(
+                            winit::keyboard::KeyCode::Escape,
+                            winit::keyboard::KeyCode::Escape,
+                        );
+                        #[cfg(target_os = "android")]
+                        if self.captured {
+                            self.capture(false);
+                        }
+                    }
+                    if consumed {
+                        return;
+                    }
+                }
+                let slop = crate::touch::SLOP_PX;
+                let events = self.touch_pointer.event(touch, slop);
+                for ev in events {
+                    self.handle_window_event(event_loop, id, ev, origin);
+                }
+                return;
+            } else {
+                let actions = self.touch_controls.handle_touch(touch, gui_scale, gw, gh);
+                for action in actions {
+                    self.apply_touch_action(action);
+                }
+                return;
+            }
+        }
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.
         if let WindowEvent::MouseInput { state, button, .. } = &mut event
             && *button == MouseButton::Left
@@ -400,6 +648,26 @@ impl Game<'_> {
         if self.pending_save.is_some() {
             return;
         }
+        #[cfg(target_os = "android")]
+        self.android_input_frame(event_loop);
+        if self.touch_active && self.touch_playing() {
+            let actions = self.touch_controls.frame(Instant::now());
+            for action in actions {
+                self.apply_touch_action(action);
+            }
+        }
+        if self.touch_use_until.is_some_and(|t| Instant::now() >= t) {
+            self.touch_use_until = None;
+            self.pad.injected.triggers[0] = 0.0;
+        }
+        if self.touch_attack_until.is_some_and(|t| Instant::now() >= t) {
+            self.touch_attack_until = None;
+            self.pad.injected.triggers[1] = 0.0;
+            self.left = false;
+        }
+        if self.touch_tapped.is_some_and(|(t, _)| Instant::now() >= t) {
+            self.touch_tapped = None;
+        }
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         self.settle_after_run(event_loop);
         self.pause_if_inactive();
@@ -413,6 +681,14 @@ impl Game<'_> {
         if self.export_held() {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(16),
+            ));
+            return;
+        }
+        if self.renderer.as_ref().is_some_and(|r| r.detached) {
+            // No window to draw in (Android in the background): wake now and then for the
+            // control socket instead of spinning.
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(100),
             ));
             return;
         }
@@ -458,7 +734,16 @@ impl Game<'_> {
 
 impl ApplicationHandler for Game<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if let Some(window) = &self.window {
+            // Back from the background (Android): the same window, a new native surface.
+            let size = window.inner_size();
+            if let Some(r) = &mut self.renderer
+                && let Err(e) = r.resume(size.width, size.height)
+            {
+                log::warn!("Horizon: the window's surface did not come back: {e}");
+            }
+            self.audio.resume_output();
+            window.request_redraw();
             return;
         }
         debug_keys::warm_debug_cpu();
@@ -534,15 +819,20 @@ impl ApplicationHandler for Game<'_> {
         };
         self.handle_window_event(event_loop, id, event, input_trace::InputOrigin::User);
         if let Some((event, modifiers)) = key {
+            #[cfg(not(target_os = "android"))]
             use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
             let name = match event.physical_key {
                 PhysicalKey::Code(code) => horizon_client::keybinds::key_name(code),
                 PhysicalKey::Unidentified(_) => None,
             };
+            #[cfg(not(target_os = "android"))]
             let layout_key = horizon_client::keybinds::layout_key_name(
                 event.physical_key,
                 &event.key_without_modifiers(),
             );
+            #[cfg(target_os = "android")]
+            let layout_key =
+                horizon_client::keybinds::layout_key_name(event.physical_key, &event.logical_key);
             let raw_code = horizon_client::keybinds::raw_key_code(event.physical_key);
             let action = match (event.state, event.repeat) {
                 (winit::event::ElementState::Released, _) => mod_api::KeyAction::Release,
@@ -589,6 +879,18 @@ impl ApplicationHandler for Game<'_> {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.idle(event_loop);
+    }
+    /// Android took the window away (the app went to the background, the screen went off): its
+    /// surface goes now, and drawing pauses until resume.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(r) = &mut self.renderer {
+            r.suspend();
+        }
+        self.audio.suspend_output();
+        #[cfg(target_os = "android")]
+        if self.captured {
+            self.capture(false);
+        }
     }
     /// The application is ending. On macOS, Quit (Cmd+Q) ends it through
     /// applicationWillTerminate without a CloseRequested; vanilla's GLFW
