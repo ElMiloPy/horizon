@@ -89,16 +89,6 @@ fn log_line_hook(level: &str, _thread: &str, message: &str, _lines: &str) {
         _ => log::Level::Info,
     };
     logcat(lvl, message);
-    if let Some(dir) = EXT_LOG_DIR.get() {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("latest.log"))
-        {
-            let _ = writeln!(f, "[{level}] {message}");
-        }
-    }
 }
 
 /// Run `f` with the activity, on the calling thread (attached to the VM for the call).

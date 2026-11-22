@@ -40,8 +40,7 @@ impl TouchControls {
                     .values()
                     .any(|(_, point)| layout::contains(rect, *point));
             if !self.draw_bedrock_control(b, a, control, bounds, pressed, color) {
-                let icon = self.icon_kind(control);
-                icon_button(b, a, bounds, icon, &self.label(control), pressed, color);
+                button(b, a, bounds, &self.label(control), pressed, color);
             }
         }
         self.draw_custom(b, a);
@@ -130,11 +129,11 @@ impl TouchControls {
         let [x, y, size, _] = square(b, center, p.size);
         if self.settings.mode == Mode::Dpad {
             let cell = size / 3.0;
-            for ([dx, dy], name, icon, pressed) in [
-                ([1.0, 0.0], "up", IconKind::Up, state.left[1] > 0.2),
-                ([0.0, 1.0], "left", IconKind::Left, state.left[0] < -0.2),
-                ([2.0, 1.0], "right", IconKind::Right, state.left[0] > 0.2),
-                ([1.0, 2.0], "down", IconKind::Down, state.left[1] < -0.2),
+            for ([dx, dy], name, label, pressed) in [
+                ([1.0, 0.0], "up", "^", state.left[1] > 0.2),
+                ([0.0, 1.0], "left", "<", state.left[0] < -0.2),
+                ([2.0, 1.0], "right", ">", state.left[0] > 0.2),
+                ([1.0, 2.0], "down", "v", state.left[1] < -0.2),
             ] {
                 let bounds = [x + cell * dx, y + cell * dy, cell, cell];
                 let sprite_name = if pressed {
@@ -143,7 +142,7 @@ impl TouchControls {
                     format!("controls/{name}")
                 };
                 if !draw_bedrock_sprite(b, a, &sprite_name, bounds, color) {
-                    icon_button(b, a, bounds, icon, "", pressed, color);
+                    button(b, a, bounds, label, pressed, color);
                 }
             }
             return;
@@ -242,34 +241,15 @@ impl TouchControls {
         }
     }
 
-    fn icon_kind(&self, control: Control) -> IconKind {
-        let vertical = self.swimming || self.vertical_movement;
-        match control {
-            Control::Move => IconKind::Text,
-            Control::Jump => IconKind::Up,
-            Control::Sneak if vertical => IconKind::Down,
-            Control::Sneak => IconKind::Sneak,
-            Control::Attack => IconKind::Attack,
-            Control::Use => IconKind::Use,
-            Control::Sprint => IconKind::Sprint,
-            Control::Inventory => IconKind::Inventory,
-            Control::Pause => IconKind::Pause,
-            Control::Chat => IconKind::Chat,
-            Control::Settings => IconKind::Settings,
-            Control::Debug => IconKind::Text,
-            Control::Perspective => IconKind::Perspective,
-            Control::Offhand => IconKind::Offhand,
-            Control::Shield => IconKind::Shield,
-        }
-    }
-
     /// Draws the Pause/Esc icon button at its placement when an inventory or
     /// container screen is open, so touch players can always exit without a keyboard.
     pub fn draw_esc(&self, b: &mut HudBatch, a: &HudAtlas, pressed: bool) {
         let p = self.esc_placement();
         let bounds = square(b, p.center, p.size);
         let color = rgba(255, 255, 255, alpha(p.opacity.max(0.75)));
-        icon_button(b, a, bounds, IconKind::Close, "Esc", pressed, color);
+        if !self.draw_bedrock_control(b, a, Control::Pause, bounds, pressed, color) {
+            button(b, a, bounds, "Esc", pressed, color);
+        }
     }
 
     /// Placement of the Esc overlay button in normalized coordinates.
@@ -283,37 +263,6 @@ impl TouchControls {
     pub fn esc_rect(&self) -> [f32; 4] {
         self.esc_placement().rect(self.aspect())
     }
-}
-
-#[derive(Clone, Copy)]
-enum IconKind {
-    Up,
-    Down,
-    Left,
-    Right,
-    Sneak,
-    Attack,
-    Use,
-    Sprint,
-    Inventory,
-    Pause,
-    Close,
-    Chat,
-    Settings,
-    Perspective,
-    Offhand,
-    Shield,
-    Text,
-}
-
-#[allow(dead_code)]
-fn dpad_icons(left: [f32; 2]) -> [([f32; 2], IconKind, bool); 4] {
-    [
-        ([1.0, 0.0], IconKind::Up, left[1] > 0.2),
-        ([0.0, 1.0], IconKind::Left, left[0] < -0.2),
-        ([2.0, 1.0], IconKind::Right, left[0] > 0.2),
-        ([1.0, 2.0], IconKind::Down, left[1] < -0.2),
-    ]
 }
 
 fn draw_bedrock_sprite(
@@ -394,154 +343,6 @@ fn draw_bedrock_menu_frame(
         }
     }
     true
-}
-
-/// Starling's classic MCPE double-bevel stone plate + pixel-art icon.
-fn icon_button(
-    b: &mut HudBatch,
-    a: &HudAtlas,
-    bounds: [f32; 4],
-    icon: IconKind,
-    label: &str,
-    pressed: bool,
-    color: u32,
-) {
-    let [x, y, w, h] = bounds;
-    let opacity = (color >> 24) as u8;
-    let (bg_a, hi_rgb, lo_rgb) = if pressed {
-        (215u16, 130u8, 220u8)
-    } else {
-        (175u16, 215u8, 28u8)
-    };
-    let bg = rgba(58, 58, 62, (u16::from(opacity) * bg_a / 255) as u8);
-    let hi = rgba(hi_rgb, hi_rgb, hi_rgb.saturating_add(7), (u16::from(opacity) * 210 / 255) as u8);
-    let lo = rgba(lo_rgb, lo_rgb, lo_rgb.saturating_add(4), (u16::from(opacity) * 220 / 255) as u8);
-    let fg = if pressed {
-        rgba(255, 245, 180, opacity)
-    } else {
-        rgba(242, 242, 246, opacity)
-    };
-    let bw = (w.min(h) * 0.065).clamp(1.2, 3.0);
-    b.fill(a, x, y, w, h, lo);
-    b.fill(
-        a,
-        x + bw,
-        y + bw,
-        (w - bw * 2.0).max(1.0),
-        (h - bw * 2.0).max(1.0),
-        bg,
-    );
-    b.fill(a, x + bw, y + bw, (w - bw * 2.0).max(1.0), bw, hi);
-    b.fill(a, x + bw, y + bw, bw, (h - bw * 2.0).max(1.0), hi);
-
-    let cx = x + w * 0.5;
-    let cy = y + h * 0.5 + if pressed { bw * 0.35 } else { 0.0 };
-    let u = w.min(h) * 0.08;
-    match icon {
-        IconKind::Up => {
-            b.fill(a, cx - u, cy - u * 2.5, u * 2.0, u, fg);
-            b.fill(a, cx - u * 2.0, cy - u * 1.5, u * 4.0, u, fg);
-            b.fill(a, cx - u * 3.0, cy - u * 0.5, u * 6.0, u, fg);
-            b.fill(a, cx - u, cy + u * 0.5, u * 2.0, u * 2.2, fg);
-        }
-        IconKind::Down => {
-            b.fill(a, cx - u, cy - u * 2.5, u * 2.0, u * 2.2, fg);
-            b.fill(a, cx - u * 3.0, cy - u * 0.3, u * 6.0, u, fg);
-            b.fill(a, cx - u * 2.0, cy + u * 0.7, u * 4.0, u, fg);
-            b.fill(a, cx - u, cy + u * 1.7, u * 2.0, u, fg);
-        }
-        IconKind::Left => {
-            b.fill(a, cx - u * 2.5, cy - u, u, u * 2.0, fg);
-            b.fill(a, cx - u * 1.5, cy - u * 2.0, u, u * 4.0, fg);
-            b.fill(a, cx - u * 0.5, cy - u * 3.0, u, u * 6.0, fg);
-            b.fill(a, cx + u * 0.5, cy - u, u * 2.2, u * 2.0, fg);
-        }
-        IconKind::Right => {
-            b.fill(a, cx - u * 2.7, cy - u, u * 2.2, u * 2.0, fg);
-            b.fill(a, cx - u * 0.5, cy - u * 3.0, u, u * 6.0, fg);
-            b.fill(a, cx + u * 0.5, cy - u * 2.0, u, u * 4.0, fg);
-            b.fill(a, cx + u * 1.5, cy - u, u, u * 2.0, fg);
-        }
-        IconKind::Sneak => {
-            b.fill(a, cx - u, cy - u * 2.2, u * 2.0, u * 4.4, fg);
-            b.fill(a, cx - u * 2.2, cy - u, u * 4.4, u * 2.0, fg);
-            b.fill(a, cx - u * 0.8, cy - u * 0.8, u * 1.6, u * 1.6, bg);
-        }
-        IconKind::Attack => {
-            for step in -2..=2 {
-                let sf = step as f32 * u;
-                b.fill(a, cx + sf - u * 0.6, cy - sf - u * 0.6, u * 1.3, u * 1.3, fg);
-            }
-            b.fill(a, cx - u * 2.4, cy + u * 0.4, u * 2.6, u * 0.9, fg);
-        }
-        IconKind::Use => {
-            b.fill(a, cx - u * 2.8, cy - u * 0.45, u * 5.6, u * 0.9, fg);
-            b.fill(a, cx - u * 0.45, cy - u * 2.8, u * 0.9, u * 5.6, fg);
-        }
-        IconKind::Sprint => {
-            for ox in [-1.6f32, 0.8] {
-                let bx = cx + ox * u;
-                b.fill(a, bx - u * 0.4, cy - u * 2.0, u, u, fg);
-                b.fill(a, bx + u * 0.4, cy - u, u, u * 2.0, fg);
-                b.fill(a, bx - u * 0.4, cy + u, u, u, fg);
-            }
-        }
-        IconKind::Inventory => {
-            for dx in [-2.2f32, 0.0, 2.2] {
-                b.fill(a, cx + dx * u - u * 0.6, cy - u * 0.6, u * 1.2, u * 1.2, fg);
-            }
-        }
-        IconKind::Pause => {
-            b.fill(a, cx - u * 1.8, cy - u * 2.2, u * 1.2, u * 4.4, fg);
-            b.fill(a, cx + u * 0.6, cy - u * 2.2, u * 1.2, u * 4.4, fg);
-        }
-        IconKind::Close => {
-            for step in -2..=2 {
-                let sf = step as f32 * u * 0.9;
-                b.fill(a, cx + sf - u * 0.55, cy + sf - u * 0.55, u * 1.1, u * 1.1, fg);
-                b.fill(a, cx + sf - u * 0.55, cy - sf - u * 0.55, u * 1.1, u * 1.1, fg);
-            }
-        }
-        IconKind::Chat => {
-            b.fill(a, cx - u * 2.5, cy - u * 2.0, u * 5.0, u * 3.2, fg);
-            b.fill(a, cx - u * 1.7, cy - u * 1.2, u * 3.4, u * 1.6, bg);
-            b.fill(a, cx - u * 1.4, cy + u * 1.2, u * 1.2, u * 1.1, fg);
-        }
-        IconKind::Settings => {
-            b.fill(a, cx - u * 1.8, cy - u * 1.8, u * 3.6, u * 3.6, fg);
-            b.fill(a, cx - u * 0.8, cy - u * 0.8, u * 1.6, u * 1.6, bg);
-            b.fill(a, cx - u * 0.6, cy - u * 2.7, u * 1.2, u * 5.4, fg);
-            b.fill(a, cx - u * 2.7, cy - u * 0.6, u * 5.4, u * 1.2, fg);
-            b.fill(a, cx - u * 0.8, cy - u * 0.8, u * 1.6, u * 1.6, bg);
-        }
-        IconKind::Perspective => {
-            b.fill(a, cx - u * 2.6, cy - u * 1.2, u * 5.2, u * 2.4, fg);
-            b.fill(a, cx - u * 1.8, cy - u * 0.6, u * 3.6, u * 1.2, bg);
-            b.fill(a, cx - u * 0.7, cy - u * 0.7, u * 1.4, u * 1.4, fg);
-        }
-        IconKind::Offhand => {
-            b.fill(a, cx - u * 2.4, cy - u * 1.4, u * 4.0, u * 0.9, fg);
-            b.fill(a, cx + u * 1.0, cy - u * 2.0, u * 1.2, u * 2.1, fg);
-            b.fill(a, cx - u * 1.6, cy + u * 0.5, u * 4.0, u * 0.9, fg);
-            b.fill(a, cx - u * 2.2, cy - u * 0.1, u * 1.2, u * 2.1, fg);
-        }
-        IconKind::Shield => {
-            b.fill(a, cx - u * 2.0, cy - u * 2.2, u * 4.0, u * 3.0, fg);
-            b.fill(a, cx - u * 1.3, cy + u * 0.8, u * 2.6, u * 1.0, fg);
-            b.fill(a, cx - u * 0.6, cy + u * 1.8, u * 1.2, u * 0.8, fg);
-            b.fill(a, cx - u * 1.2, cy - u * 1.4, u * 2.4, u * 2.0, bg);
-        }
-        IconKind::Text => {
-            if !label.is_empty() {
-                let width = HudBatch::text_width(a, label);
-                let start = b.vertices.len();
-                b.text(a, label, cx - width * 0.5, cy - 4.0, fg, true);
-                let scale = ((w - 6.0).max(1.0) / width.max(1.0))
-                    .min(((h - 6.0).max(1.0) / 8.0).min(1.0));
-                b.scale_since(start, cx, cy, scale, scale);
-            }
-        }
-    }
 }
 
 /// The D-pad's arrows: each one's cell in a 3x3 grid, its label and whether

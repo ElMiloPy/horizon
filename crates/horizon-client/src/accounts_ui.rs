@@ -628,7 +628,7 @@ impl AccountsUi {
         let pad = 10.0;
         let title = "Accounts (Microsoft & Offline)";
         let tw = HudBatch::text_width(atlas, title);
-        batch.text(batch_atlas(atlas), title, px + (pw - tw) * 0.5, py + 7.0, rgba(255, 255, 255, 255), true);
+        batch.text(atlas, title, px + (pw - tw) * 0.5, py + 7.0, rgba(255, 255, 255, 255), true);
 
         let close_rect = [px + pw - 24.0, py + 5.0, 18.0, 14.0];
         draw_btn(batch, atlas, close_rect, "X", false, hit(close_rect, cursor));
@@ -1043,10 +1043,6 @@ impl AccountsUi {
         }
         (true, None)
     }
-}
-
-fn batch_atlas(a: &HudAtlas) -> &HudAtlas {
-    a
 }
 
 fn valid_name_char(c: char) -> bool {
