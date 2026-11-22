@@ -188,6 +188,18 @@ def main():
     ]
     print("+", " ".join(cmd))
     subprocess.run(cmd, env=env, check=True, cwd=ROOT)
+    # Ensure assets/minecraft/sounds.json is present for bundled gameplay sounds.
+    if asset_index:
+        with open(idx_path) as f:
+            sounds_json_info = json.load(f).get("objects", {}).get("minecraft/sounds.json")
+        if sounds_json_info:
+            h = sounds_json_info["hash"]
+            src_sj = MINECRAFT_DIR / "assets" / "objects" / h[:2] / h
+            dst_sj = OUTPUT_DIR / "assets" / "minecraft" / "sounds.json"
+            if src_sj.is_file():
+                dst_sj.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_sj, dst_sj)
+                print(f"Copied sounds.json ({dst_sj.stat().st_size} bytes)")
     print(f"\nSUCCESS! Horizon resources prepared in: {OUTPUT_DIR}")
 
 
