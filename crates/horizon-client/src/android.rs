@@ -71,6 +71,15 @@ pub fn logcat(level: log::Level, message: &str) {
     }
 }
 
+static EXT_LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn write_crash_file(text: &str) {
+    if let Some(dir) = EXT_LOG_DIR.get() {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(dir.join("last_crash.txt"), text);
+    }
+}
+
 fn log_line_hook(level: &str, _thread: &str, message: &str, _lines: &str) {
     let lvl = match level {
         "ERROR" => log::Level::Error,
@@ -80,6 +89,16 @@ fn log_line_hook(level: &str, _thread: &str, message: &str, _lines: &str) {
         _ => log::Level::Info,
     };
     logcat(lvl, message);
+    if let Some(dir) = EXT_LOG_DIR.get() {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("latest.log"))
+        {
+            let _ = writeln!(f, "[{level}] {message}");
+        }
+    }
 }
 
 /// Run `f` with the activity, on the calling thread (attached to the VM for the call).
@@ -817,15 +836,17 @@ pub fn main(app: AndroidApp) {
         libc::pthread_setname_np(libc::pthread_self(), c"main".as_ptr());
     }
     set_android_app(app.clone());
+    if let Some(dir) = app.external_data_path() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::remove_file(dir.join("latest.log"));
+        let _ = std::fs::remove_file(dir.join("last_crash.txt"));
+        let _ = EXT_LOG_DIR.set(dir);
+    }
     horizon_client_render::logging::set_line_hook(log_line_hook);
-    let crash_dir = app.external_data_path();
     std::panic::set_hook(Box::new(move |info| {
         let msg = format!("PANIC: {info}");
         logcat(log::Level::Error, &msg);
-        if let Some(dir) = &crash_dir {
-            let _ = std::fs::create_dir_all(dir);
-            let _ = std::fs::write(dir.join("last_crash.txt"), &msg);
-        }
+        write_crash_file(&msg);
     }));
 
     let home: PathBuf = app

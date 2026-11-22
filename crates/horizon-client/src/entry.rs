@@ -207,6 +207,10 @@ pub fn start<G>(
     // Mod loading emits refusals; both client and dedicated logs must exist first.
     let (_ids, _loaded_code) = load(&native, &launch);
     crash::install(home.clone(), side);
+    #[cfg(target_os = "android")]
+    crash::on_report(|_, report| {
+        crate::android::write_crash_file(&report.text());
+    });
     if horizon_world::native_load_hooks::install(
         horizon_world::native_load_hooks::NativeLoadHooks {
             item_ability_default: horizon_items::item_abilities::vanilla_can_perform,
@@ -272,6 +276,8 @@ pub fn start<G>(
         let usage = error.is::<game::UsageError>() || missing_mods;
         if !missing_mods {
             log::error!("Horizon: {error}");
+            #[cfg(target_os = "android")]
+            crate::android::write_crash_file(&format!("ERROR: {error}"));
         }
         logging::flush();
         // The report's path is the last line on stderr (crash::SAVED_LINE).

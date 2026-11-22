@@ -120,7 +120,7 @@ def main():
     download_file(server_url, server_jar_path, server_sha1)
     print(f"Server JAR verified: {server_jar_path.stat().st_size / 1024 / 1024:.1f} MB")
 
-    # Asset Index
+    # Asset Index & non-sound asset objects (panorama, fonts, languages)
     asset_index = manifest.get("assetIndex", {})
     if asset_index:
         idx_url = asset_index["url"]
@@ -128,6 +128,22 @@ def main():
         idx_path = MINECRAFT_DIR / "assets" / "indexes" / f"{idx_id}.json"
         download_file(idx_url, idx_path, asset_index.get("sha1"))
         print(f"Asset index verified: {idx_path}")
+        with open(idx_path) as f:
+            objects = json.load(f).get("objects", {})
+        asset_downloads = []
+        for name, info in objects.items():
+            if name.startswith("minecraft/sounds/"):
+                continue
+            h = info["hash"]
+            url = f"https://resources.download.minecraft.net/{h[:2]}/{h}"
+            target = MINECRAFT_DIR / "assets" / "objects" / h[:2] / h
+            asset_downloads.append((url, target, h))
+        print(f"Downloading {len(asset_downloads)} non-sound asset objects (panorama, fonts, languages)...")
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(download_file, url, target, sha1) for url, target, sha1 in asset_downloads]
+            for f in futures:
+                f.result()
+        print("All non-sound asset objects verified.")
 
     # 3. Libraries
     libraries_dir = MINECRAFT_DIR / "libraries"
