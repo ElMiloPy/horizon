@@ -1,0 +1,9 @@
+[mod]
+id = "viahorizon"
+name = "ViaHorizon"
+version = "0.1.0"
+description = "Minimal ViaVersion + ViaBackwards + ViaRewind + ViaFabricPlus-style protocol selector and translator for Horizon (Minecraft 26.3)."
+authors = ["ElMiloPy"]
+license = "MIT"
+side = "client"
+entry = "crates/viahorizon-mod"

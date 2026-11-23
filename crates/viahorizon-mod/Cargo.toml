@@ -1,0 +1,8 @@
+[package]
+name = "viahorizon-mod"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+viahorizon-core = { path = "../viahorizon-core" }

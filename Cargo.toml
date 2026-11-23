@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/viahorizon-core",
+    "crates/viahorizon-cli",
+    "crates/viahorizon-mod",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
