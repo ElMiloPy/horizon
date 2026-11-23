@@ -204,6 +204,7 @@ enum UiBtn {
     FocusClientId,
     StartMicrosoft,
     CancelMicrosoft,
+    CopyCode,
     OpenBrowser,
     SelectSkin(usize),
     ToggleSlim,
@@ -342,9 +343,9 @@ impl AccountsUi {
         for ev in events {
             match ev {
                 AuthEvent::DeviceCode(prompt) => {
-                    self.status = format!("Enter code {} at {}", prompt.user_code, prompt.verification_uri);
+                    self.status = format!("Code {} copied! Tap Open Browser and paste it.", prompt.user_code);
                     #[cfg(target_os = "android")]
-                    crate::android::open_url(&prompt.verification_uri);
+                    crate::android::set_clipboard(&prompt.user_code);
                     self.device_prompt = Some(prompt);
                 }
                 AuthEvent::Status(msg) => {
@@ -679,13 +680,32 @@ impl AccountsUi {
         batch.text(atlas, "Microsoft Account:", px + pad, y, rgba(185, 195, 210, 255), true);
         y += 10.0;
         if let Some(prompt) = &self.device_prompt {
-            let code_line = format!("Code: {}   ({})", prompt.user_code, prompt.verification_uri);
-            batch.text(atlas, &code_line, px + pad, y + 2.0, rgba(255, 232, 120, 255), true);
-            y += 12.0;
-            let open_rect = [px + pad, y, inner_w * 0.5 - 2.0, 17.0];
-            let cancel_rect = [px + pad + inner_w * 0.5 + 2.0, y, inner_w * 0.5 - 2.0, 17.0];
+            let code_box = [px + pad, y, inner_w, 18.0];
+            batch.fill(atlas, code_box[0], code_box[1], code_box[2], code_box[3], rgba(24, 30, 44, 245));
+            let code_text = format!("Code: {}   ({})", prompt.user_code, prompt.verification_uri);
+            let cw = HudBatch::text_width(atlas, &code_text);
+            let start = batch.vertices.len();
+            batch.text(
+                atlas,
+                &code_text,
+                code_box[0] + (code_box[2] - cw) * 0.5,
+                code_box[1] + 5.0,
+                rgba(255, 232, 120, 255),
+                true,
+            );
+            if cw > code_box[2] - 8.0 {
+                let s = ((code_box[2] - 8.0) / cw).clamp(0.5, 1.0);
+                batch.scale_since(start, code_box[0] + code_box[2] * 0.5, code_box[1] + 9.0, s, s);
+            }
+            y += 21.0;
+            let third = (inner_w - 6.0) / 3.0;
+            let copy_rect = [px + pad, y, third, 17.0];
+            let open_rect = [px + pad + third + 3.0, y, third, 17.0];
+            let cancel_rect = [px + pad + (third + 3.0) * 2.0, y, third, 17.0];
+            draw_btn(batch, atlas, copy_rect, "Copy Code", true, hit(copy_rect, cursor));
             draw_btn(batch, atlas, open_rect, "Open Browser", true, hit(open_rect, cursor));
             draw_btn(batch, atlas, cancel_rect, "Cancel", false, hit(cancel_rect, cursor));
+            self.buttons.push((copy_rect, UiBtn::CopyCode));
             self.buttons.push((open_rect, UiBtn::OpenBrowser));
             self.buttons.push((cancel_rect, UiBtn::CancelMicrosoft));
         } else {
@@ -933,6 +953,13 @@ impl AccountsUi {
             UiBtn::CancelMicrosoft => {
                 self.cancel_auth();
                 self.status = "Microsoft sign-in cancelled.".into();
+            }
+            UiBtn::CopyCode => {
+                if let Some(prompt) = &self.device_prompt {
+                    #[cfg(target_os = "android")]
+                    crate::android::set_clipboard(&prompt.user_code);
+                    self.status = format!("Copied code {}! Tap Open Browser to sign in.", prompt.user_code);
+                }
             }
             UiBtn::OpenBrowser => {
                 if let Some(prompt) = &self.device_prompt {

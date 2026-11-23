@@ -185,6 +185,42 @@ pub fn open_url(url: &str) {
     });
 }
 
+/// Copy plain text to the Android system clipboard via `ClipboardManager`.
+pub fn set_clipboard(text: &str) {
+    with_activity(|env, activity| {
+        let svc_name = env.new_string("clipboard")?;
+        let mgr = env
+            .call_method(
+                activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[(&svc_name).into()],
+            )?
+            .l()?;
+        if mgr.is_null() {
+            return Ok(());
+        }
+        let label = env.new_string("Horizon")?;
+        let value = env.new_string(text)?;
+        let clip_cls = env.find_class("android/content/ClipData")?;
+        let clip = env
+            .call_static_method(
+                clip_cls,
+                "newPlainText",
+                "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+                &[(&label).into(), (&value).into()],
+            )?
+            .l()?;
+        let _ = env.call_method(
+            mgr,
+            "setPrimaryClip",
+            "(Landroid/content/ClipData;)V",
+            &[(&clip).into()],
+        );
+        Ok(())
+    });
+}
+
 /// Show or hide the Android soft keyboard.
 pub fn show_keyboard(show: bool) {
     if let Some(app) = APP.get() {
