@@ -1,11 +1,8 @@
-//! ViaFabricPlus-style server-list UI controller for Horizon's Multiplayer screen.
-//!
-//! Renders a compact `Protocol: <version>` button in the top-right corner of the
-//! server list and opens a version picker modal allowing one-click protocol switching
-//! (persisted in `viahorizon.json`).
+//! ViaFabricPlus-style server-list UI controller for Horizon's Multiplayer screen,
+//! backed by an auto-managed mini JRE + official Java ViaProxy.
 
-use std::path::{Path, PathBuf};
-use viahorizon_core::{ProtocolVersion, ViaConfig, ViaJavaProxy, ViaProxy};
+use std::path::PathBuf;
+use viahorizon_core::{ProtocolVersion, ViaConfig, ViaJavaProxy};
 
 /// Rectangle in GUI coordinates `[x, y, w, h]`.
 pub type Rect = [f32; 4];
@@ -20,22 +17,23 @@ pub enum UiEvent {
 
 /// Server-list overlay state (ViaFabricPlus-style).
 pub struct ServerListMod {
+    pub data_dir: PathBuf,
     pub config_path: PathBuf,
     pub config: ViaConfig,
     pub picker_open: bool,
-    pub active_proxy: Option<ViaProxy>,
-    pub active_java_proxy: Option<ViaJavaProxy>,
+    pub active_proxy: Option<ViaJavaProxy>,
 }
 
 impl ServerListMod {
-    pub fn new(config_path: PathBuf) -> Self {
+    pub fn new(data_dir: PathBuf) -> Self {
+        let config_path = data_dir.join("viahorizon.json");
         let config = ViaConfig::load(&config_path);
         Self {
+            data_dir,
             config_path,
             config,
             picker_open: false,
             active_proxy: None,
-            active_java_proxy: None,
         }
     }
 
@@ -44,7 +42,7 @@ impl ServerListMod {
             .unwrap_or(ProtocolVersion::V26_3)
     }
 
-    /// Top-right button on Horizon's Multiplayer screen (`Protocol: 1.20.4`).
+    /// Top-right button on Horizon's Multiplayer screen (`Protocol: 1.8.9`).
     pub fn button_rect(screen_w: f32) -> Rect {
         let w = 112.0;
         [screen_w - w - 8.0, 6.0, w, 18.0]
@@ -93,41 +91,19 @@ impl ServerListMod {
         UiEvent::ClosedPicker
     }
 
-    /// Starts (or replaces) the local translating proxy for `target_addr` and returns
-    /// the local address Horizon should connect to.
-    pub fn connect_via_proxy(&mut self, target_addr: &str) -> std::io::Result<String> {
+    /// Auto-starts (or replaces) the internal Java ViaProxy (downloading the mini JRE
+    /// and `ViaProxy.jar` on first use) and returns the local `127.0.0.1:<port>` address.
+    pub fn connect(&mut self, target_addr: &str) -> std::io::Result<String> {
         let version = self.config.version_for(target_addr);
         if version == ProtocolVersion::V26_3 {
             return Ok(target_addr.to_owned());
         }
-        if let Some(old) = self.active_proxy.take() {
+        if let Some(mut old) = self.active_proxy.take() {
             old.stop();
         }
-        let proxy = ViaProxy::start("127.0.0.1:0", target_addr.to_owned(), version)?;
-        let addr = proxy.listen_addr.to_string();
-        self.active_proxy = Some(proxy);
-        Ok(addr)
-    }
-
-    /// Starts (or replaces) the standalone Java ViaProxy backend (full 1.7.10 -> 26.3
-    /// ViaVersion + ViaBackwards + ViaRewind Play-phase translation) and returns the
-    /// local `127.0.0.1:<port>` address Horizon should connect to.
-    pub fn connect_via_java_proxy(
-        &mut self,
-        java_bin: &Path,
-        jar_path: &Path,
-        target_addr: &str,
-    ) -> std::io::Result<String> {
-        let version = self.config.version_for(target_addr);
-        if version == ProtocolVersion::V26_3 {
-            return Ok(target_addr.to_owned());
-        }
-        if let Some(mut old) = self.active_java_proxy.take() {
-            old.stop();
-        }
-        let proxy = ViaJavaProxy::start(java_bin, jar_path, None, target_addr, version)?;
+        let proxy = ViaJavaProxy::start_auto(&self.data_dir, None, target_addr, version)?;
         let addr = proxy.listen_addr.clone();
-        self.active_java_proxy = Some(proxy);
+        self.active_proxy = Some(proxy);
         Ok(addr)
     }
 }
@@ -142,9 +118,9 @@ mod tests {
 
     #[test]
     fn server_list_button_opens_picker_and_persists_version() {
-        let path = std::env::temp_dir().join(format!("viahorizon-test-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let mut ui = ServerListMod::new(path.clone());
+        let dir = std::env::temp_dir().join(format!("viahorizon-mod-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut ui = ServerListMod::new(dir.clone());
         assert_eq!(ui.selected_version(), ProtocolVersion::V26_3);
 
         let btn = ServerListMod::button_rect(427.0);
@@ -160,8 +136,8 @@ mod tests {
         assert!(!ui.picker_open);
         assert_eq!(ui.selected_version(), ProtocolVersion::V1_8_9);
 
-        let reloaded = ServerListMod::new(path.clone());
+        let reloaded = ServerListMod::new(dir.clone());
         assert_eq!(reloaded.selected_version(), ProtocolVersion::V1_8_9);
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
