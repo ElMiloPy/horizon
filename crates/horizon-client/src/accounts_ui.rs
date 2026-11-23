@@ -109,6 +109,8 @@ impl AccountStore {
         self.selected.and_then(|i| self.accounts.get(i))
     }
 
+const DEFAULT_MSA_CLIENT_ID: &str = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb";
+
     pub fn resolved_client_id(&self) -> Option<String> {
         std::env::var("HORIZON_MSA_CLIENT_ID")
             .ok()
@@ -116,6 +118,7 @@ impl AccountStore {
             .or_else(|| self.msa_client_id.clone())
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty())
+            .or_else(|| Some(Self::DEFAULT_MSA_CLIENT_ID.to_owned()))
     }
 }
 
@@ -709,23 +712,6 @@ impl AccountsUi {
             self.buttons.push((open_rect, UiBtn::OpenBrowser));
             self.buttons.push((cancel_rect, UiBtn::CancelMicrosoft));
         } else {
-            let has_env_cid = std::env::var("HORIZON_MSA_CLIENT_ID")
-                .ok()
-                .or_else(|| option_env!("HORIZON_MSA_CLIENT_ID").map(str::to_owned))
-                .is_some_and(|s| !s.trim().is_empty());
-            if !has_env_cid {
-                let cid_rect = [px + pad, y, inner_w, 16.0];
-                draw_input(
-                    batch,
-                    atlas,
-                    cid_rect,
-                    &self.client_id_input,
-                    "Azure Client ID (HORIZON_MSA_CLIENT_ID)",
-                    self.focused == TextField::ClientId,
-                );
-                self.buttons.push((cid_rect, UiBtn::FocusClientId));
-                y += 19.0;
-            }
             let ms_rect = [px + pad, y, inner_w, 18.0];
             let label = if self.auth_rx.is_some() {
                 "Signing in... (tap to cancel)"
