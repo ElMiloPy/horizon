@@ -125,6 +125,7 @@ pub mod mod_registry;
 pub mod modgen;
 pub mod motion;
 pub mod multiplayer;
+pub mod viahorizon;
 pub mod music;
 pub mod native_client_hooks;
 pub mod native_stack_hooks;

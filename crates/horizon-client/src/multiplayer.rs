@@ -713,6 +713,14 @@ impl Screen {
                         true,
                         46,
                     ),
+                    b(
+                        w - 108.0,
+                        6.0,
+                        100.0,
+                        &crate::viahorizon::button_label(),
+                        true,
+                        90,
+                    ),
                 ]
             }
             Self::Edit { address, packs, .. } => vec![
@@ -1500,6 +1508,10 @@ impl Screen {
                 {
                     return Outcome::Connect { address, lan };
                 }
+            }
+            (Self::List { .. }, Some(90)) => {
+                crate::viahorizon::cycle_version();
+                return Outcome::None;
             }
             (Self::List { .. }, Some(41)) => {
                 return Outcome::Open(Box::new(Self::Direct {

@@ -2550,7 +2550,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     Action::None
                 }
                 crate::multiplayer::Outcome::Connect { address, lan } => Action::Connect {
-                    address,
+                    address: if lan {
+                        address
+                    } else {
+                        crate::viahorizon::prepare_address(&address)
+                    },
                     lan,
                     realm: false,
                 },
@@ -3138,7 +3142,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     }
                     (
                         Action::Connect {
-                            address,
+                            address: if lan {
+                                address
+                            } else {
+                                crate::viahorizon::prepare_address(&address)
+                            },
                             lan,
                             realm: false,
                         },
