@@ -93,7 +93,7 @@ fn handle_connection(
     }
     #[allow(unreachable_code)]
     {
-        let _ = c2s.join();
+        let _ = _c2s.join();
         Ok(())
     }
 }

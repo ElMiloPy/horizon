@@ -4,8 +4,8 @@
 //! server list and opens a version picker modal allowing one-click protocol switching
 //! (persisted in `viahorizon.json`).
 
-use std::path::PathBuf;
-use viahorizon_core::{ProtocolVersion, ViaConfig, ViaProxy};
+use std::path::{Path, PathBuf};
+use viahorizon_core::{ProtocolVersion, ViaConfig, ViaJavaProxy, ViaProxy};
 
 /// Rectangle in GUI coordinates `[x, y, w, h]`.
 pub type Rect = [f32; 4];
@@ -24,6 +24,7 @@ pub struct ServerListMod {
     pub config: ViaConfig,
     pub picker_open: bool,
     pub active_proxy: Option<ViaProxy>,
+    pub active_java_proxy: Option<ViaJavaProxy>,
 }
 
 impl ServerListMod {
@@ -34,6 +35,7 @@ impl ServerListMod {
             config,
             picker_open: false,
             active_proxy: None,
+            active_java_proxy: None,
         }
     }
 
@@ -104,6 +106,28 @@ impl ServerListMod {
         let proxy = ViaProxy::start("127.0.0.1:0", target_addr.to_owned(), version)?;
         let addr = proxy.listen_addr.to_string();
         self.active_proxy = Some(proxy);
+        Ok(addr)
+    }
+
+    /// Starts (or replaces) the standalone Java ViaProxy backend (full 1.7.10 -> 26.3
+    /// ViaVersion + ViaBackwards + ViaRewind Play-phase translation) and returns the
+    /// local `127.0.0.1:<port>` address Horizon should connect to.
+    pub fn connect_via_java_proxy(
+        &mut self,
+        java_bin: &Path,
+        jar_path: &Path,
+        target_addr: &str,
+    ) -> std::io::Result<String> {
+        let version = self.config.version_for(target_addr);
+        if version == ProtocolVersion::V26_3 {
+            return Ok(target_addr.to_owned());
+        }
+        if let Some(mut old) = self.active_java_proxy.take() {
+            old.stop();
+        }
+        let proxy = ViaJavaProxy::start(java_bin, jar_path, None, target_addr, version)?;
+        let addr = proxy.listen_addr.clone();
+        self.active_java_proxy = Some(proxy);
         Ok(addr)
     }
 }

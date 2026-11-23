@@ -26,6 +26,7 @@ pub struct ProtocolVersion {
 }
 
 impl ProtocolVersion {
+    pub const V1_7_10: Self = Self { protocol: 5, name: "1.7.10" };
     pub const V1_8_9: Self = Self { protocol: 47, name: "1.8.9" };
     pub const V1_12_2: Self = Self { protocol: 340, name: "1.12.2" };
     pub const V1_16_5: Self = Self { protocol: 754, name: "1.16.5" };
@@ -49,7 +50,25 @@ impl ProtocolVersion {
         Self::V1_16_5,
         Self::V1_12_2,
         Self::V1_8_9,
+        Self::V1_7_10,
     ];
+
+    /// Version string accepted by `ViaProxy.jar cli --target-version`.
+    pub fn viaproxy_name(self) -> &'static str {
+        match self.protocol {
+            5 => "1.7.6-1.7.10",
+            47 => "1.8.x",
+            340 => "1.12.2",
+            754 => "1.16.4-1.16.5",
+            762 => "1.19.4",
+            765 => "1.20.3-1.20.4",
+            766 => "1.20.5-1.20.6",
+            767 => "1.21-1.21.1",
+            769 => "1.21.4",
+            770 => "1.21.5",
+            _ => "26.3",
+        }
+    }
 
     pub fn from_protocol(protocol: i32) -> Option<Self> {
         Self::ALL.iter().copied().find(|v| v.protocol == protocol)
